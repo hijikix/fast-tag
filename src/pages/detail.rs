@@ -1,7 +1,13 @@
 use bevy::prelude::*;
 
-pub fn setup() {
+#[derive(Resource, Default)]
+pub struct Parameters {
+    pub url: String,
+}
+
+pub fn setup(params: Res<Parameters>) {
     println!("detail setup");
+    println!("url {:?}", params.url);
 }
 
 pub fn update() {

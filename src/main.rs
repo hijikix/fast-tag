@@ -20,6 +20,7 @@ fn main() {
         .add_systems(Update, list::update.run_if(in_state(AppState::List)))
         .add_systems(OnExit(AppState::List), list::cleanup)
         // detail page
+        .init_resource::<detail::Parameters>()
         .add_systems(OnEnter(AppState::Detail), detail::setup)
         .add_systems(Update, detail::update.run_if(in_state(AppState::Detail)))
         .add_systems(OnExit(AppState::Detail), detail::cleanup)

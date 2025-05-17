@@ -2,6 +2,8 @@ use crate::state::AppState;
 use bevy::prelude::*;
 use bevy::ui::Interaction;
 
+use super::detail;
+
 const NORMAL_BUTTON: Color = Color::srgb(0.15, 0.15, 0.15);
 const HOVERED_BUTTON: Color = Color::srgb(0.25, 0.25, 0.25);
 const PRESSED_BUTTON: Color = Color::srgb(0.35, 0.75, 0.35);
@@ -51,6 +53,7 @@ pub fn setup(mut commands: Commands) {
 
 #[allow(clippy::type_complexity)]
 pub fn update(
+    mut params: ResMut<detail::Parameters>,
     mut next_state: ResMut<NextState<AppState>>,
     mut interaction_query: Query<
         (&Interaction, &mut BackgroundColor),
@@ -62,6 +65,11 @@ pub fn update(
         match *interaction {
             Interaction::Pressed => {
                 *color = PRESSED_BUTTON.into();
+
+                // move to detail
+                params.url = String::from(
+                    "https://fastly.picsum.photos/id/318/640/640.jpg?hmac=5cOMICOxIroPZAdiGA4-M50bvlhNo05T5t_FufYyRtI",
+                );
                 next_state.set(AppState::Detail);
             }
             Interaction::Hovered => {
