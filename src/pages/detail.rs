@@ -1,4 +1,8 @@
-use bevy::{asset::RenderAssetUsages, prelude::*};
+use crate::pages::components::egui_common;
+use crate::state::AppState;
+use bevy::asset::RenderAssetUsages;
+use bevy::prelude::*;
+use bevy_egui::EguiContexts;
 
 #[derive(Resource, Default)]
 pub struct Parameters {
@@ -54,8 +58,14 @@ pub fn setup(mut commands: Commands, params: Res<Parameters>, mut images: ResMut
     commands.spawn(Sprite::from_image(image_handle));
 }
 
-pub fn update() {
-    println!("detail update");
+pub fn update() {}
+
+pub fn ui_system(
+    mut contexts: EguiContexts,
+    current_state: Res<State<AppState>>,
+    next_state: ResMut<NextState<AppState>>,
+) {
+    egui_common::ui_top_panel(&mut contexts, current_state, next_state);
 }
 
 pub fn cleanup() {
