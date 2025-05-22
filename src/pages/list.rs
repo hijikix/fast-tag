@@ -11,7 +11,7 @@ const HOVERED_BUTTON: Color = Color::srgb(0.25, 0.25, 0.25);
 const PRESSED_BUTTON: Color = Color::srgb(0.35, 0.75, 0.35);
 
 #[derive(Resource)]
-pub struct MenuData {
+pub struct ListData {
     button_entity: Entity,
 }
 
@@ -50,7 +50,7 @@ pub fn setup(mut commands: Commands) {
             )],
         ))
         .id();
-    commands.insert_resource(MenuData { button_entity });
+    commands.insert_resource(ListData { button_entity });
 }
 
 #[allow(clippy::type_complexity)]
@@ -164,7 +164,7 @@ pub fn ui_system(
     });
 }
 
-pub fn cleanup(mut commands: Commands, menu_data: Res<MenuData>) {
+pub fn cleanup(mut commands: Commands, list_data: Res<ListData>) {
     println!("list cleanup");
-    commands.entity(menu_data.button_entity).despawn();
+    commands.entity(list_data.button_entity).despawn();
 }
