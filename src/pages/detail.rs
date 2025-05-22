@@ -1,4 +1,8 @@
-use bevy::{asset::RenderAssetUsages, prelude::*};
+use crate::pages::components::egui_common;
+use crate::state::AppState;
+use bevy::asset::RenderAssetUsages;
+use bevy::prelude::*;
+use bevy_egui::EguiContexts;
 
 #[derive(Resource, Default)]
 pub struct Parameters {
@@ -39,6 +43,11 @@ fn load_image(url: &str) -> Result<image::DynamicImage, image::ImageError> {
     ))
 }
 
+#[derive(Resource)]
+pub struct DetailData {
+    image_entity: Entity,
+}
+
 pub fn setup(mut commands: Commands, params: Res<Parameters>, mut images: ResMut<Assets<Image>>) {
     println!("detail setup");
     println!("url {:?}", params.url);
@@ -51,13 +60,21 @@ pub fn setup(mut commands: Commands, params: Res<Parameters>, mut images: ResMut
     };
     let image = Image::from_dynamic(dynamic_image, true, RenderAssetUsages::default());
     let image_handle = images.add(image);
-    commands.spawn(Sprite::from_image(image_handle));
+    let image_entity = commands.spawn(Sprite::from_image(image_handle)).id();
+    commands.insert_resource(DetailData { image_entity });
 }
 
-pub fn update() {
-    println!("detail update");
+pub fn update() {}
+
+pub fn ui_system(
+    mut contexts: EguiContexts,
+    current_state: Res<State<AppState>>,
+    next_state: ResMut<NextState<AppState>>,
+) {
+    egui_common::ui_top_panel(&mut contexts, current_state, next_state);
 }
 
-pub fn cleanup() {
+pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
     println!("detail cleanup");
+    commands.entity(detail_data.image_entity).despawn();
 }
