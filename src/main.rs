@@ -10,7 +10,10 @@ mod pages {
     pub mod list;
 }
 
-use pages::{detail, list};
+use pages::{
+    detail::{self, SelectedRect},
+    list,
+};
 
 fn main() {
     App::new()
@@ -29,6 +32,7 @@ fn main() {
         )
         .add_systems(OnExit(AppState::List), list::cleanup)
         // detail page
+        .init_gizmo_group::<SelectedRect>()
         .init_resource::<detail::Parameters>()
         .add_systems(OnEnter(AppState::Detail), detail::setup)
         .add_systems(Update, detail::update.run_if(in_state(AppState::Detail)))
