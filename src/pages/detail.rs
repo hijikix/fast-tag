@@ -120,6 +120,14 @@ fn rect_color(class: usize) -> impl Into<Color> {
         return YELLOW;
     } else if class == 5 {
         return PURPLE;
+    } else if class == 6 {
+        return AQUA;
+    } else if class == 7 {
+        return BROWN;
+    } else if class == 8 {
+        return NAVY;
+    } else if class == 9 {
+        return LIME;
     }
     return BLACK;
 }
@@ -219,6 +227,18 @@ pub fn update(
     }
     if keyboard.pressed(KeyCode::Digit5) {
         detail_data.selected_class = 5;
+    }
+    if keyboard.pressed(KeyCode::Digit6) {
+        detail_data.selected_class = 6;
+    }
+    if keyboard.pressed(KeyCode::Digit7) {
+        detail_data.selected_class = 7;
+    }
+    if keyboard.pressed(KeyCode::Digit8) {
+        detail_data.selected_class = 8;
+    }
+    if keyboard.pressed(KeyCode::Digit9) {
+        detail_data.selected_class = 9;
     }
 }
 
