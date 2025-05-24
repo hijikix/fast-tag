@@ -49,13 +49,19 @@ fn load_image(url: &str) -> Result<image::DynamicImage, image::ImageError> {
     ))
 }
 
+pub struct Rectangle {
+    class: usize,
+    position: Vec<(Vec2, Vec2)>,
+}
+
 #[derive(Resource)]
 pub struct DetailData {
     image_entity: Entity,
     cursor_posision: Option<Vec2>,
     start_position: Option<Vec2>,
-    rectangles: Vec<(Vec2, Vec2)>,
+    rectangles: Vec<Rectangle>,
     selected_rectangles_index: Option<usize>,
+    selected_class: usize,
 }
 
 #[derive(Default, Reflect, GizmoConfigGroup)]
@@ -99,13 +105,31 @@ pub fn setup(
         start_position: None,
         rectangles: Vec::new(),
         selected_rectangles_index: None,
+        selected_class: 1,
     });
 }
 
+fn rect_color(class: usize) -> impl Into<Color> {
+    if class == 1 {
+        return RED;
+    } else if class == 2 {
+        return BLUE;
+    } else if class == 3 {
+        return GREEN;
+    } else if class == 4 {
+        return YELLOW;
+    } else if class == 5 {
+        return PURPLE;
+    }
+    return BLACK;
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     cameras: Query<(&Camera, &GlobalTransform)>,
     mut gizmos: Gizmos,
     mut selected_rect_gizmos: Gizmos<SelectedRect>,
+    keyboard: Res<ButtonInput<KeyCode>>,
     mut detail_data: ResMut<DetailData>,
     mut contexts: EguiContexts,
     mut mouse_button_input_events: EventReader<MouseButtonInput>,
@@ -123,6 +147,7 @@ pub fn update(
     }
 
     if !egui_input_use {
+        let selected_class = detail_data.selected_class;
         for event in mouse_button_input_events.read() {
             info!("{:?}", event);
             if event.button == MouseButton::Left && event.state == ButtonState::Pressed {
@@ -138,7 +163,10 @@ pub fn update(
                 let end_pos = detail_data.cursor_posision.unwrap();
 
                 // Now push to rectangles using the temporary variables
-                detail_data.rectangles.push((start_pos, end_pos));
+                detail_data.rectangles.push(Rectangle {
+                    class: selected_class,
+                    position: vec![(start_pos, end_pos)],
+                });
                 detail_data.start_position = None;
             }
         }
@@ -148,18 +176,49 @@ pub fn update(
     if detail_data.start_position.is_some() {
         let start_pos = detail_data.start_position.unwrap();
         let end_pos = detail_data.cursor_posision.unwrap();
-        gizmos.rect_2d((start_pos + end_pos) / 2.0, end_pos - start_pos, RED);
+        gizmos.rect_2d(
+            (start_pos + end_pos) / 2.0,
+            end_pos - start_pos,
+            rect_color(detail_data.selected_class),
+        );
     }
 
     // Draw all stored rectangles
     let current_selected = detail_data.selected_rectangles_index;
-    for (index, (start_pos, end_pos)) in detail_data.rectangles.iter().enumerate() {
-        let is_selected = current_selected == Some(index);
-        if is_selected {
-            selected_rect_gizmos.rect_2d((start_pos + end_pos) / 2.0, end_pos - start_pos, RED);
-        } else {
-            gizmos.rect_2d((start_pos + end_pos) / 2.0, end_pos - start_pos, RED);
+    for (index, rect) in detail_data.rectangles.iter().enumerate() {
+        // Get the first position pair from the rectangle
+        if let Some((start_pos, end_pos)) = rect.position.first() {
+            let is_selected = current_selected == Some(index);
+            if is_selected {
+                selected_rect_gizmos.rect_2d(
+                    (start_pos + end_pos) / 2.0,
+                    end_pos - start_pos,
+                    rect_color(rect.class),
+                );
+            } else {
+                gizmos.rect_2d(
+                    (start_pos + end_pos) / 2.0,
+                    end_pos - start_pos,
+                    rect_color(rect.class),
+                );
+            }
         }
+    }
+
+    if keyboard.pressed(KeyCode::Digit1) {
+        detail_data.selected_class = 1;
+    }
+    if keyboard.pressed(KeyCode::Digit2) {
+        detail_data.selected_class = 2;
+    }
+    if keyboard.pressed(KeyCode::Digit3) {
+        detail_data.selected_class = 3;
+    }
+    if keyboard.pressed(KeyCode::Digit4) {
+        detail_data.selected_class = 4;
+    }
+    if keyboard.pressed(KeyCode::Digit5) {
+        detail_data.selected_class = 5;
     }
 }
 
