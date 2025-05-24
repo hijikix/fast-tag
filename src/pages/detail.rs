@@ -122,26 +122,25 @@ pub fn update(
             .ok();
     }
 
-    for event in mouse_button_input_events.read() {
-        info!("{:?}", event);
-        if !egui_input_use
-            && event.button == MouseButton::Left
-            && event.state == ButtonState::Pressed
-        {
-            detail_data.start_position = detail_data.cursor_posision;
-        }
+    if !egui_input_use {
+        for event in mouse_button_input_events.read() {
+            info!("{:?}", event);
+            if event.button == MouseButton::Left && event.state == ButtonState::Pressed {
+                detail_data.start_position = detail_data.cursor_posision;
+            }
 
-        if detail_data.start_position.is_some()
-            && event.button == MouseButton::Left
-            && event.state == ButtonState::Released
-        {
-            // Store the positions in temporary variables to avoid simultaneous borrows
-            let start_pos = detail_data.start_position.unwrap();
-            let end_pos = detail_data.cursor_posision.unwrap();
+            if detail_data.start_position.is_some()
+                && event.button == MouseButton::Left
+                && event.state == ButtonState::Released
+            {
+                // Store the positions in temporary variables to avoid simultaneous borrows
+                let start_pos = detail_data.start_position.unwrap();
+                let end_pos = detail_data.cursor_posision.unwrap();
 
-            // Now push to rectangles using the temporary variables
-            detail_data.rectangles.push((start_pos, end_pos));
-            detail_data.start_position = None;
+                // Now push to rectangles using the temporary variables
+                detail_data.rectangles.push((start_pos, end_pos));
+                detail_data.start_position = None;
+            }
         }
     }
 
