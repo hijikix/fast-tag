@@ -10,6 +10,7 @@ use crate::ui::components::egui_common;
 use crate::ui::detail_ui;
 use bevy::input::mouse::{MouseButtonInput, MouseWheel};
 use bevy::prelude::*;
+use bevy::text::Text2d;
 use bevy::window::PrimaryWindow;
 use bevy_egui::EguiContexts;
 
@@ -24,6 +25,7 @@ pub struct DetailData {
     cursor_position: Option<Vec2>,
     selected_class: usize,
     camera_controller: CameraController,
+    text_entities: Vec<Entity>,
 }
 
 #[derive(Resource, Default)]
@@ -82,6 +84,7 @@ pub fn setup(
         selected_class: 1,
         cursor_position: None,
         camera_controller: CameraController::default(),
+        text_entities: Vec::new(),
     });
 
     commands.insert_resource(Rectangles::default());
@@ -100,16 +103,52 @@ fn draw_rectangles(
     let current_selected = selected_index.0;
     for (index, rect) in rectangles.0.iter().enumerate() {
         let is_selected = current_selected == Some(index);
+        let color = rect_color(rect.class);
+        
+        // Draw rectangle
         if is_selected {
-            selected_rect_gizmos.rect_2d(rect.center(), rect.size(), rect_color(rect.class));
+            selected_rect_gizmos.rect_2d(rect.center(), rect.size(), color);
         } else {
-            gizmos.rect_2d(rect.center(), rect.size(), rect_color(rect.class));
+            gizmos.rect_2d(rect.center(), rect.size(), color);
         }
+    }
+}
+
+fn update_text_entities(
+    commands: &mut Commands,
+    detail_data: &mut DetailData,
+    rectangles: &Rectangles,
+) {
+    // Clear existing text entities
+    for entity in detail_data.text_entities.drain(..) {
+        commands.entity(entity).despawn();
+    }
+    
+    // Create new text entities for each rectangle
+    for (index, rect) in rectangles.0.iter().enumerate() {
+        let top_left = Vec2::new(
+            rect.position.0.x.min(rect.position.1.x),
+            rect.position.0.y.max(rect.position.1.y)
+        );
+        let text_position = top_left + Vec2::new(15.0, -15.0);
+        
+        let text_entity = commands.spawn((
+            Text2d::new(index.to_string()),
+            TextFont {
+                font_size: 20.0,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            Transform::from_translation(text_position.extend(10.0)),
+        )).id();
+        
+        detail_data.text_entities.push(text_entity);
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn update(
+    mut commands: Commands,
     cameras: Query<(&Camera, &GlobalTransform)>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     mut gizmos: Gizmos,
@@ -144,6 +183,9 @@ pub fn update(
     // Process interactions
     let cursor_pos = detail_data.cursor_position;
     let selected_class = detail_data.selected_class;
+    
+    // Track the number of rectangles before processing
+    let rect_count_before = rectangles.0.len();
 
     handlers.resizing.process(
         &mut rectangles.0,
@@ -175,6 +217,12 @@ pub fn update(
         &mut gizmos,
         &mut command_history,
     );
+    
+    // Update text entities if rectangles have changed
+    let rect_count_after = rectangles.0.len();
+    if rect_count_before != rect_count_after || detail_data.text_entities.len() != rect_count_after {
+        update_text_entities(&mut commands, &mut detail_data, &rectangles);
+    }
 
     draw_rectangles(
         &rectangles,
@@ -212,6 +260,7 @@ pub fn update(
                 command.execute(&mut rectangles.0);
                 command_history.push(command);
                 selected_index.0 = None;
+                update_text_entities(&mut commands, &mut detail_data, &rectangles);
             }
         }
     }
@@ -228,11 +277,13 @@ pub fn update(
             // Redo with Cmd+Shift+Z (macOS) or Ctrl+Shift+Z (Windows/Linux)
             if command_history.redo(&mut rectangles.0) {
                 selected_index.0 = None;
+                update_text_entities(&mut commands, &mut detail_data, &rectangles);
             }
         } else {
             // Undo with Cmd+Z (macOS) or Ctrl+Z (Windows/Linux)
             if command_history.undo(&mut rectangles.0) {
                 selected_index.0 = None;
+                update_text_entities(&mut commands, &mut detail_data, &rectangles);
             }
         }
     }
@@ -248,15 +299,24 @@ pub fn update(
 }
 
 pub fn ui_system(
+    mut commands: Commands,
     mut contexts: EguiContexts,
     current_state: Res<State<AppState>>,
     next_state: ResMut<NextState<AppState>>,
     mut rectangles: ResMut<Rectangles>,
     mut selected_index: ResMut<SelectedRectangleIndex>,
+    mut detail_data: ResMut<DetailData>,
 ) {
     egui_common::ui_top_panel(&mut contexts, current_state, next_state);
 
+    let rect_count_before = rectangles.0.len();
     detail_ui::render_side_panels(&mut contexts, &mut rectangles.0, &mut selected_index.0);
+    
+    // Check if rectangles were sorted (order might have changed)
+    if rect_count_before == rectangles.0.len() && rect_count_before > 0 {
+        // Update text entities to reflect new order
+        update_text_entities(&mut commands, &mut detail_data, &rectangles);
+    }
 
     detail_ui::render_rectangle_editor_window(&mut contexts, &mut rectangles.0, selected_index.0);
 }
@@ -264,5 +324,11 @@ pub fn ui_system(
 pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
     println!("detail cleanup");
     commands.entity(detail_data.image_entity).despawn();
+    
+    // Clean up text entities
+    for entity in &detail_data.text_entities {
+        commands.entity(*entity).despawn();
+    }
+    
     commands.remove_resource::<CommandHistory>();
 }
