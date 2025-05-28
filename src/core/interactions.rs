@@ -3,6 +3,7 @@ use bevy::input::ButtonState;
 use bevy::input::mouse::MouseButtonInput;
 use bevy_egui::EguiContexts;
 use crate::core::rectangle::{Rectangle, Corner};
+use crate::core::commands::{Command, CommandHistory};
 
 #[derive(PartialEq, Default)]
 pub enum InteractionMode {
@@ -17,6 +18,7 @@ pub enum InteractionMode {
 pub struct ResizingHandler {
     pub rectangle_index: Option<usize>,
     pub corner: Option<Corner>,
+    pub original_rect: Option<Rectangle>,
 }
 
 impl ResizingHandler {
@@ -29,6 +31,7 @@ impl ResizingHandler {
         mode: &mut InteractionMode,
         selected_index: &mut Option<usize>,
         egui_contexts: &mut EguiContexts,
+        command_history: &mut CommandHistory,
     ) {
         const MARGIN: f32 = 5.0;
         let ctx = egui_contexts.ctx_mut();
@@ -54,6 +57,9 @@ impl ResizingHandler {
                     if event.button == MouseButton::Left && event.state == ButtonState::Pressed {
                         self.rectangle_index = hovering_index;
                         self.corner = corner_option;
+                        if let Some(idx) = hovering_index {
+                            self.original_rect = rectangles.get(idx).cloned();
+                        }
                         *mode = InteractionMode::Resizing;
                     }
                 }
@@ -75,6 +81,16 @@ impl ResizingHandler {
                             rectangle.normalize_position();
                         }
                         *selected_index = Some(rect_idx);
+                        
+                        // Create resize command
+                        if let (Some(old_rect), Some(new_rect)) = (self.original_rect.as_ref(), rectangles.get(rect_idx)) {
+                            let command = Command::ResizeRectangle {
+                                index: rect_idx,
+                                old_rect: old_rect.clone(),
+                                new_rect: new_rect.clone(),
+                            };
+                            command_history.push(command);
+                        }
                     }
                     self.clear();
                     *mode = InteractionMode::Default;
@@ -86,6 +102,7 @@ impl ResizingHandler {
     pub fn clear(&mut self) {
         self.rectangle_index = None;
         self.corner = None;
+        self.original_rect = None;
     }
 }
 
@@ -93,6 +110,7 @@ impl ResizingHandler {
 pub struct GrabbingHandler {
     pub rectangle_index: Option<usize>,
     pub start_position: Option<Vec2>,
+    pub original_center: Option<Vec2>,
 }
 
 impl GrabbingHandler {
@@ -105,6 +123,7 @@ impl GrabbingHandler {
         mode: &mut InteractionMode,
         selected_index: &mut Option<usize>,
         egui_contexts: &mut EguiContexts,
+        command_history: &mut CommandHistory,
     ) {
         const MARGIN: f32 = 5.0;
         let ctx = egui_contexts.ctx_mut();
@@ -127,6 +146,11 @@ impl GrabbingHandler {
                     if event.button == MouseButton::Left && event.state == ButtonState::Pressed {
                         self.rectangle_index = hovering_index;
                         self.start_position = cursor_position;
+                        if let Some(idx) = hovering_index {
+                            if let Some(rect) = rectangles.get(idx) {
+                                self.original_center = Some(rect.center());
+                            }
+                        }
                         *mode = InteractionMode::Grabbing;
                     }
                 }
@@ -147,6 +171,22 @@ impl GrabbingHandler {
             for event in mouse_events.iter() {
                 if event.button == MouseButton::Left && event.state == ButtonState::Released {
                     *selected_index = self.rectangle_index;
+                    
+                    // Create move command
+                    if let (Some(rect_idx), Some(old_center)) = (self.rectangle_index, self.original_center) {
+                        if let Some(rect) = rectangles.get(rect_idx) {
+                            let new_center = rect.center();
+                            if old_center != new_center {
+                                let command = Command::MoveRectangle {
+                                    index: rect_idx,
+                                    old_position: (old_center.x, old_center.y),
+                                    new_position: (new_center.x, new_center.y),
+                                };
+                                command_history.push(command);
+                            }
+                        }
+                    }
+                    
                     self.clear();
                     *mode = InteractionMode::Default;
                 }
@@ -157,6 +197,7 @@ impl GrabbingHandler {
     pub fn clear(&mut self) {
         self.rectangle_index = None;
         self.start_position = None;
+        self.original_center = None;
     }
 }
 
@@ -176,6 +217,7 @@ impl DrawingHandler {
         selected_class: usize,
         egui_input_use: bool,
         gizmos: &mut Gizmos,
+        command_history: &mut CommandHistory,
     ) {
         if *mode == InteractionMode::Default && !egui_input_use && cursor_position.is_some() {
             for event in mouse_events.iter() {
@@ -195,7 +237,10 @@ impl DrawingHandler {
                     let start_pos = self.start_position.unwrap();
                     let end_pos = cursor_position.unwrap();
                     
-                    rectangles.push(Rectangle::new(selected_class, start_pos, end_pos));
+                    let rectangle = Rectangle::new(selected_class, start_pos, end_pos);
+                    let command = Command::AddRectangle { rectangle: rectangle.clone() };
+                    command.execute(rectangles);
+                    command_history.push(command);
                     self.clear();
                     *mode = InteractionMode::Default;
                 }
