@@ -1,9 +1,12 @@
-use crate::ui::components::egui_common;
 use crate::app::state::AppState;
-use crate::io::image_loader;
-use crate::core::rectangle::{Rectangle, rect_color};
-use crate::core::interactions::{InteractionMode, ResizingHandler, GrabbingHandler, DrawingHandler, key_code_to_class};
 use crate::core::camera_controls::CameraController;
+use crate::core::commands::{Command, CommandHistory};
+use crate::core::interactions::{
+    DrawingHandler, GrabbingHandler, InteractionMode, ResizingHandler, key_code_to_class,
+};
+use crate::core::rectangle::{Rectangle, rect_color};
+use crate::io::image_loader;
+use crate::ui::components::egui_common;
 use crate::ui::detail_ui;
 use bevy::input::mouse::{MouseButtonInput, MouseWheel};
 use bevy::prelude::*;
@@ -14,10 +17,6 @@ use bevy_egui::EguiContexts;
 pub struct Parameters {
     pub url: String,
 }
-
-
-
-
 
 #[derive(Resource)]
 pub struct DetailData {
@@ -41,7 +40,7 @@ pub struct InteractionState {
 #[derive(Resource, Default)]
 pub struct InteractionHandlers {
     resizing: ResizingHandler,
-    grabbing: GrabbingHandler, 
+    grabbing: GrabbingHandler,
     drawing: DrawingHandler,
 }
 
@@ -58,13 +57,14 @@ pub fn setup(
 
     // load image
     println!("url {:?}", params.url);
-    let image_entity = match image_loader::spawn_image_sprite(&mut commands, &mut images, &params.url) {
-        Ok(entity) => entity,
-        Err(e) => {
-            eprintln!("load_image error: {}", e);
-            return;
-        }
-    };
+    let image_entity =
+        match image_loader::spawn_image_sprite(&mut commands, &mut images, &params.url) {
+            Ok(entity) => entity,
+            Err(e) => {
+                eprintln!("load_image error: {}", e);
+                return;
+            }
+        };
 
     // gizmo config
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
@@ -83,20 +83,13 @@ pub fn setup(
         cursor_position: None,
         camera_controller: CameraController::default(),
     });
-    
+
     commands.insert_resource(Rectangles::default());
     commands.insert_resource(SelectedRectangleIndex::default());
     commands.insert_resource(InteractionState::default());
     commands.insert_resource(InteractionHandlers::default());
+    commands.insert_resource(CommandHistory::default());
 }
-
-
-
-
-
-
-
-
 
 fn draw_rectangles(
     rectangles: &Rectangles,
@@ -108,17 +101,9 @@ fn draw_rectangles(
     for (index, rect) in rectangles.0.iter().enumerate() {
         let is_selected = current_selected == Some(index);
         if is_selected {
-            selected_rect_gizmos.rect_2d(
-                rect.center(),
-                rect.size(),
-                rect_color(rect.class),
-            );
+            selected_rect_gizmos.rect_2d(rect.center(), rect.size(), rect_color(rect.class));
         } else {
-            gizmos.rect_2d(
-                rect.center(),
-                rect.size(),
-                rect_color(rect.class),
-            );
+            gizmos.rect_2d(rect.center(), rect.size(), rect_color(rect.class));
         }
     }
 }
@@ -135,6 +120,7 @@ pub fn update(
     mut selected_index: ResMut<SelectedRectangleIndex>,
     mut interaction_state: ResMut<InteractionState>,
     mut handlers: ResMut<InteractionHandlers>,
+    mut command_history: ResMut<CommandHistory>,
     mut egui_contexts: EguiContexts,
     mut mouse_button_input_events: EventReader<MouseButtonInput>,
     mut mouse_wheel_events: EventReader<MouseWheel>,
@@ -148,7 +134,7 @@ pub fn update(
     let cursor_position = window
         .cursor_position()
         .and_then(|pos| camera.viewport_to_world_2d(camera_transform, pos).ok());
-    
+
     if cursor_position.is_some() {
         detail_data.cursor_position = cursor_position;
     }
@@ -158,7 +144,7 @@ pub fn update(
     // Process interactions
     let cursor_pos = detail_data.cursor_position;
     let selected_class = detail_data.selected_class;
-    
+
     handlers.resizing.process(
         &mut rectangles.0,
         cursor_pos,
@@ -166,6 +152,7 @@ pub fn update(
         &mut interaction_state.mode,
         &mut selected_index.0,
         &mut egui_contexts,
+        &mut command_history,
     );
 
     handlers.grabbing.process(
@@ -175,6 +162,7 @@ pub fn update(
         &mut interaction_state.mode,
         &mut selected_index.0,
         &mut egui_contexts,
+        &mut command_history,
     );
 
     handlers.drawing.process(
@@ -185,11 +173,17 @@ pub fn update(
         selected_class,
         egui_input_use,
         &mut gizmos,
+        &mut command_history,
     );
 
-    draw_rectangles(&rectangles, &selected_index, &mut gizmos, &mut selected_rect_gizmos);
+    draw_rectangles(
+        &rectangles,
+        &selected_index,
+        &mut gizmos,
+        &mut selected_rect_gizmos,
+    );
 
-    // Camera controls  
+    // Camera controls
     detail_data.camera_controller.process_zoom(
         &mut mouse_wheel_events,
         &mut camera_transforms,
@@ -210,7 +204,34 @@ pub fn update(
     if keyboard.pressed(KeyCode::Backspace) {
         if let Some(idx) = selected_index.0 {
             if idx < rectangles.0.len() {
-                rectangles.0.remove(idx);
+                let rectangle = rectangles.0[idx].clone();
+                let command = Command::DeleteRectangle {
+                    index: idx,
+                    rectangle,
+                };
+                command.execute(&mut rectangles.0);
+                command_history.push(command);
+                selected_index.0 = None;
+            }
+        }
+    }
+
+    // Handle undo/redo
+    let modifier_pressed = if cfg!(target_os = "macos") {
+        keyboard.pressed(KeyCode::SuperLeft) || keyboard.pressed(KeyCode::SuperRight)
+    } else {
+        keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight)
+    };
+    
+    if modifier_pressed && keyboard.just_pressed(KeyCode::KeyZ) {
+        if keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight) {
+            // Redo with Cmd+Shift+Z (macOS) or Ctrl+Shift+Z (Windows/Linux)
+            if command_history.redo(&mut rectangles.0) {
+                selected_index.0 = None;
+            }
+        } else {
+            // Undo with Cmd+Z (macOS) or Ctrl+Z (Windows/Linux)
+            if command_history.undo(&mut rectangles.0) {
                 selected_index.0 = None;
             }
         }
@@ -235,20 +256,13 @@ pub fn ui_system(
 ) {
     egui_common::ui_top_panel(&mut contexts, current_state, next_state);
 
-    detail_ui::render_side_panels(
-        &mut contexts,
-        &mut rectangles.0,
-        &mut selected_index.0,
-    );
+    detail_ui::render_side_panels(&mut contexts, &mut rectangles.0, &mut selected_index.0);
 
-    detail_ui::render_rectangle_editor_window(
-        &mut contexts,
-        &mut rectangles.0,
-        selected_index.0,
-    );
+    detail_ui::render_rectangle_editor_window(&mut contexts, &mut rectangles.0, selected_index.0);
 }
 
 pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
     println!("detail cleanup");
     commands.entity(detail_data.image_entity).despawn();
+    commands.remove_resource::<CommandHistory>();
 }
