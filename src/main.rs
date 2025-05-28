@@ -1,6 +1,11 @@
 use bevy::prelude::*;
 
 mod state;
+mod image_loader;
+mod rectangle;
+mod interactions;
+mod camera_controls;
+mod detail_ui;
 use bevy_egui::{EguiContextPass, EguiPlugin};
 use state::AppState;
 
@@ -34,6 +39,10 @@ fn main() {
         // detail page
         .init_gizmo_group::<SelectedRect>()
         .init_resource::<detail::Parameters>()
+        .init_resource::<detail::Rectangles>()
+        .init_resource::<detail::SelectedRectangleIndex>()
+        .init_resource::<detail::InteractionState>()
+        .init_resource::<detail::InteractionHandlers>()
         .add_systems(OnEnter(AppState::Detail), detail::setup)
         .add_systems(Update, detail::update.run_if(in_state(AppState::Detail)))
         .add_systems(
