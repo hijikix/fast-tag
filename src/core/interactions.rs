@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::input::ButtonState;
 use bevy::input::mouse::MouseButtonInput;
 use bevy_egui::EguiContexts;
-use crate::rectangle::{Rectangle, Corner};
+use crate::core::rectangle::{Rectangle, Corner};
 
 #[derive(PartialEq, Default)]
 pub enum InteractionMode {
@@ -211,7 +211,7 @@ impl DrawingHandler {
             gizmos.rect_2d(
                 (start_pos + end_pos) / 2.0,
                 end_pos - start_pos,
-                crate::rectangle::rect_color(selected_class),
+                crate::core::rectangle::rect_color(selected_class),
             );
         }
     }
