@@ -2,7 +2,7 @@ use crate::pages::components::egui_common;
 use crate::state::AppState;
 use bevy::color::palettes::css::*;
 use bevy::input::ButtonState;
-use bevy::input::mouse::MouseButtonInput;
+use bevy::input::mouse::{MouseButtonInput, MouseWheel};
 use bevy::prelude::*;
 use bevy::{asset::RenderAssetUsages, window::PrimaryWindow};
 use bevy_egui::egui::scroll_area::ScrollBarVisibility;
@@ -104,6 +104,17 @@ pub struct DetailData {
 
     grabbing_rectangles_index: Option<usize>,
     grabbing_start_position: Option<Vec2>,
+
+    // Zoom functionality
+    zoom_level: f32,
+    min_zoom: f32,
+    max_zoom: f32,
+
+    // Camera panning functionality
+    is_panning: bool,
+    panning_start_position: Option<Vec2>,
+    panning_start_screen_position: Option<Vec2>,
+    camera_start_position: Option<Vec3>,
 }
 
 #[derive(Default, Reflect, GizmoConfigGroup)]
@@ -153,6 +164,13 @@ pub fn setup(
         grabbing_corner: None,
         grabbing_rectangles_index: None,
         grabbing_start_position: None,
+        zoom_level: 1.0,
+        min_zoom: 0.1,
+        max_zoom: 10.0,
+        is_panning: false,
+        panning_start_position: None,
+        panning_start_screen_position: None,
+        camera_start_position: None,
     });
 }
 
@@ -179,7 +197,7 @@ fn rect_color(class: usize) -> impl Into<Color> {
     return BLACK;
 }
 
-fn key_code_to_class(keyboard: Res<ButtonInput<KeyCode>>) -> Option<usize> {
+fn key_code_to_class(keyboard: &mut Res<ButtonInput<KeyCode>>) -> Option<usize> {
     if keyboard.pressed(KeyCode::Digit1) {
         return Some(1);
     }
@@ -300,7 +318,7 @@ fn is_cursor_posision_overlap(cursor_posision: Option<Vec2>, position: &(Vec2, V
 
 fn prosess_resizing_mode(
     detail_data: &mut ResMut<DetailData>,
-    mouse_button_input_events: &mut EventReader<MouseButtonInput>,
+    mouse_button_input_events: &[MouseButtonInput],
     cursor_posision: &Option<Vec2>,
     egui_contexts: &mut EguiContexts,
 ) {
@@ -327,7 +345,7 @@ fn prosess_resizing_mode(
         // Store corner_index in a local variable to avoid moving it in the loop
         let corner = corner_index;
 
-        for event in mouse_button_input_events.read() {
+        for event in mouse_button_input_events.iter() {
             if event.button == MouseButton::Left && event.state == ButtonState::Pressed {
                 detail_data.grabbing_corner_rectangles_index = hovering_index;
                 detail_data.grabbing_corner = corner;
@@ -367,7 +385,7 @@ fn prosess_resizing_mode(
         }
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
 
-        for event in mouse_button_input_events.read() {
+        for event in mouse_button_input_events.iter() {
             if event.button == MouseButton::Left && event.state == ButtonState::Released {
                 // Normalize coordinates after resizing to ensure consistency
                 if let Some(rectangle_index) = detail_data.grabbing_corner_rectangles_index {
@@ -388,7 +406,7 @@ fn prosess_resizing_mode(
 
 fn prosess_grabbing_mode(
     detail_data: &mut ResMut<DetailData>,
-    mouse_button_input_events: &mut EventReader<MouseButtonInput>,
+    mouse_button_input_events: &[MouseButtonInput],
     cursor_posision: &Option<Vec2>,
     egui_contexts: &mut EguiContexts,
 ) {
@@ -407,7 +425,7 @@ fn prosess_grabbing_mode(
 
     if detail_data.mode == Mode::Default && hovering_index.is_some() {
         ctx.set_cursor_icon(egui::CursorIcon::Grab);
-        for event in mouse_button_input_events.read() {
+        for event in mouse_button_input_events.iter() {
             if event.button == MouseButton::Left && event.state == ButtonState::Pressed {
                 detail_data.grabbing_rectangles_index = hovering_index;
                 detail_data.grabbing_start_position = *cursor_posision;
@@ -436,7 +454,7 @@ fn prosess_grabbing_mode(
             ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
         }
 
-        for event in mouse_button_input_events.read() {
+        for event in mouse_button_input_events.iter() {
             if event.button == MouseButton::Left && event.state == ButtonState::Released {
                 detail_data.selected_rectangles_index = detail_data.grabbing_rectangles_index;
                 detail_data.grabbing_rectangles_index = None;
@@ -449,13 +467,13 @@ fn prosess_grabbing_mode(
 
 fn prosess_drawing_mode(
     detail_data: &mut ResMut<DetailData>,
-    mouse_button_input_events: &mut EventReader<MouseButtonInput>,
+    mouse_button_input_events: &[MouseButtonInput],
     egui_input_use: bool,
     gizmos: &mut Gizmos,
 ) {
     if detail_data.mode == Mode::Default && !egui_input_use && detail_data.cursor_posision.is_some()
     {
-        for event in mouse_button_input_events.read() {
+        for event in mouse_button_input_events.iter() {
             if event.button == MouseButton::Left && event.state == ButtonState::Pressed {
                 detail_data.drawing_start_position = detail_data.cursor_posision;
                 detail_data.mode = Mode::Drawing;
@@ -466,7 +484,7 @@ fn prosess_drawing_mode(
     if detail_data.mode == Mode::Drawing && !egui_input_use && detail_data.cursor_posision.is_some()
     {
         let selected_class = detail_data.selected_class;
-        for event in mouse_button_input_events.read() {
+        for event in mouse_button_input_events.iter() {
             if detail_data.drawing_start_position.is_some()
                 && event.button == MouseButton::Left
                 && event.state == ButtonState::Released
@@ -505,6 +523,84 @@ fn prosess_drawing_mode(
     }
 }
 
+fn process_camera_controls(
+    detail_data: &mut ResMut<DetailData>,
+    mouse_wheel_events: &mut EventReader<MouseWheel>,
+    mouse_button_input_events: &[MouseButtonInput],
+    mut cameras: Query<&mut Transform, With<Camera>>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    egui_input_use: bool,
+) {
+    if egui_input_use {
+        return;
+    }
+
+    // Process zoom
+    for event in mouse_wheel_events.read() {
+        let zoom_delta = event.y * 0.001; // Reduced sensitivity for smoother zoom
+        let new_zoom =
+            (detail_data.zoom_level + zoom_delta).clamp(detail_data.min_zoom, detail_data.max_zoom);
+
+        if new_zoom != detail_data.zoom_level {
+            detail_data.zoom_level = new_zoom;
+
+            // Apply zoom to the camera transform instead of scaling the image
+            if let Ok(mut camera_transform) = cameras.single_mut() {
+                camera_transform.scale = Vec3::splat(1.0 / detail_data.zoom_level);
+            }
+        }
+    }
+
+    // Get current screen cursor position
+    let window = q_window.single().unwrap();
+    let current_screen_pos = window.cursor_position();
+
+    // Process camera panning
+    for event in mouse_button_input_events.iter() {
+        if event.button == MouseButton::Right {
+            match event.state {
+                ButtonState::Pressed => {
+                    if !detail_data.is_panning {
+                        detail_data.is_panning = true;
+                        detail_data.panning_start_screen_position = current_screen_pos;
+
+                        // Store the initial camera position
+                        if let Ok(camera_transform) = cameras.single() {
+                            detail_data.camera_start_position = Some(camera_transform.translation);
+                        }
+                    }
+                }
+                ButtonState::Released => {
+                    detail_data.is_panning = false;
+                    detail_data.panning_start_screen_position = None;
+                    detail_data.camera_start_position = None;
+                }
+            }
+        }
+    }
+
+    // Handle camera panning while right mouse button is held
+    if detail_data.is_panning {
+        if let (Some(start_screen_pos), Some(current_screen_pos), Some(camera_start)) = (
+            detail_data.panning_start_screen_position,
+            current_screen_pos,
+            detail_data.camera_start_position,
+        ) {
+            // Calculate delta in screen space
+            let screen_delta = current_screen_pos - start_screen_pos;
+
+            // Convert screen delta to world delta considering zoom level
+            let world_delta = screen_delta / detail_data.zoom_level;
+
+            // Apply the movement to the camera (inverted because we want to move the view)
+            if let Ok(mut camera_transform) = cameras.single_mut() {
+                camera_transform.translation =
+                    camera_start - Vec3::new(world_delta.x, -world_delta.y, 0.0);
+            }
+        }
+    }
+}
+
 fn draw_rectangles(
     detail_data: &ResMut<DetailData>,
     gizmos: &mut Gizmos,
@@ -538,10 +634,12 @@ pub fn update(
     q_window: Query<&Window, With<PrimaryWindow>>,
     mut gizmos: Gizmos,
     mut selected_rect_gizmos: Gizmos<SelectedRect>,
-    keyboard: Res<ButtonInput<KeyCode>>,
+    mut keyboard: Res<ButtonInput<KeyCode>>,
     mut detail_data: ResMut<DetailData>,
     mut egui_contexts: EguiContexts,
     mut mouse_button_input_events: EventReader<MouseButtonInput>,
+    mut mouse_wheel_events: EventReader<MouseWheel>,
+    camera_transforms: Query<&mut Transform, With<Camera>>,
 ) {
     // egui is consuming mouse input
     let egui_input_use = egui_contexts.ctx_mut().wants_pointer_input();
@@ -557,32 +655,65 @@ pub fn update(
         detail_data.cursor_posision = cursor_posision;
     }
 
+    // Collect all mouse button events once to avoid consuming them multiple times
+    let mouse_events: Vec<MouseButtonInput> = mouse_button_input_events.read().cloned().collect();
+
     prosess_resizing_mode(
         &mut detail_data,
-        &mut mouse_button_input_events,
+        &mouse_events,
         &cursor_posision,
         &mut egui_contexts,
     );
 
     prosess_grabbing_mode(
         &mut detail_data,
-        &mut mouse_button_input_events,
+        &mouse_events,
         &cursor_posision,
         &mut egui_contexts,
     );
 
-    prosess_drawing_mode(
-        &mut detail_data,
-        &mut mouse_button_input_events,
-        egui_input_use,
-        &mut gizmos,
-    );
+    prosess_drawing_mode(&mut detail_data, &mouse_events, egui_input_use, &mut gizmos);
 
     draw_rectangles(&detail_data, &mut gizmos, &mut selected_rect_gizmos);
 
+    // zoom and camera panning controls
+    process_camera_controls(
+        &mut detail_data,
+        &mut mouse_wheel_events,
+        &mouse_events,
+        camera_transforms,
+        q_window,
+        egui_input_use,
+    );
+
     // select class by numeric key
-    if let Some(class) = key_code_to_class(keyboard) {
+    if let Some(class) = key_code_to_class(&mut keyboard) {
         detail_data.selected_class = class;
+    }
+
+    // delete element
+    if keyboard.pressed(KeyCode::Backspace) {
+        if let Some(selected_index) = detail_data.selected_rectangles_index {
+            if selected_index < detail_data.rectangles.len() {
+                detail_data.rectangles.remove(selected_index);
+                detail_data.selected_rectangles_index = None;
+            }
+        }
+    }
+
+    // cancel status
+    if keyboard.pressed(KeyCode::Escape) {
+        detail_data.selected_rectangles_index = None;
+        detail_data.mode = Mode::Default;
+        detail_data.drawing_start_position = None;
+        detail_data.grabbing_corner_rectangles_index = None;
+        detail_data.grabbing_corner = None;
+        detail_data.grabbing_rectangles_index = None;
+        detail_data.grabbing_start_position = None;
+        detail_data.is_panning = false;
+        detail_data.panning_start_position = None;
+        detail_data.panning_start_screen_position = None;
+        detail_data.camera_start_position = None;
     }
 }
 
