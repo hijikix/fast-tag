@@ -1,4 +1,4 @@
-use crate::state::AppState;
+use crate::app::state::AppState;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 

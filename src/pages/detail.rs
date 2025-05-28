@@ -1,10 +1,10 @@
-use crate::pages::components::egui_common;
-use crate::state::AppState;
-use crate::image_loader;
-use crate::rectangle::{Rectangle, rect_color};
-use crate::interactions::{InteractionMode, ResizingHandler, GrabbingHandler, DrawingHandler, key_code_to_class};
-use crate::camera_controls::CameraController;
-use crate::detail_ui;
+use crate::ui::components::egui_common;
+use crate::app::state::AppState;
+use crate::io::image_loader;
+use crate::core::rectangle::{Rectangle, rect_color};
+use crate::core::interactions::{InteractionMode, ResizingHandler, GrabbingHandler, DrawingHandler, key_code_to_class};
+use crate::core::camera_controls::CameraController;
+use crate::ui::detail_ui;
 use bevy::input::mouse::{MouseButtonInput, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;

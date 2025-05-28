@@ -1,16 +1,13 @@
 use bevy::prelude::*;
 
-mod state;
-mod image_loader;
-mod rectangle;
-mod interactions;
-mod camera_controls;
-mod detail_ui;
+mod app;
+mod ui;
+mod core;
+mod io;
 use bevy_egui::{EguiContextPass, EguiPlugin};
-use state::AppState;
+use app::state::AppState;
 
 mod pages {
-    pub mod components;
     pub mod detail;
     pub mod list;
 }

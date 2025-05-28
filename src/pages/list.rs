@@ -1,5 +1,5 @@
-use crate::pages::components::egui_common;
-use crate::state::AppState;
+use crate::ui::components::egui_common;
+use crate::app::state::AppState;
 use bevy::prelude::*;
 use bevy::ui::Interaction;
 use bevy_egui::{EguiContexts, egui};

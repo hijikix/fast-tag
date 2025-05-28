@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::egui::scroll_area::ScrollBarVisibility;
 use bevy_egui::{EguiContexts, egui};
-use crate::rectangle::Rectangle;
+use crate::core::rectangle::Rectangle;
 
 pub fn render_rectangle_list(
     ui: &mut egui::Ui,
