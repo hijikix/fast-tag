@@ -2,10 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(cargo check:*)",
-      "Bash(mkdir:*)",
-      "Bash(mv:*)",
-      "Bash(rm:*)",
-      "Bash(rmdir:*)"
+      "Bash(mkdir:*)"
     ],
     "deny": []
   }
