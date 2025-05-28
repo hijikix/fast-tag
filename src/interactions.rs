@@ -20,12 +20,6 @@ pub struct ResizingHandler {
 }
 
 impl ResizingHandler {
-    pub fn new() -> Self {
-        Self {
-            rectangle_index: None,
-            corner: None,
-        }
-    }
 
     pub fn process(
         &mut self,
@@ -102,12 +96,6 @@ pub struct GrabbingHandler {
 }
 
 impl GrabbingHandler {
-    pub fn new() -> Self {
-        Self {
-            rectangle_index: None,
-            start_position: None,
-        }
-    }
 
     pub fn process(
         &mut self,
@@ -178,11 +166,6 @@ pub struct DrawingHandler {
 }
 
 impl DrawingHandler {
-    pub fn new() -> Self {
-        Self {
-            start_position: None,
-        }
-    }
 
     pub fn process(
         &mut self,

@@ -107,8 +107,4 @@ impl CameraController {
         self.camera_start_position = None;
     }
 
-    pub fn reset_all(&mut self) {
-        self.reset_panning();
-        self.zoom_level = 1.0;
-    }
 }
