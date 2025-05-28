@@ -13,28 +13,28 @@ pub fn render_rectangle_list(
     // Add sorting buttons
     ui.horizontal(|ui| {
         ui.label("Sort by:");
-        if ui.button("↑ X").clicked() {
+        if ui.button("X Asc").clicked() {
             rectangles.sort_by(|a, b| {
                 let a_x = a.position.0.x.min(a.position.1.x);
                 let b_x = b.position.0.x.min(b.position.1.x);
                 a_x.partial_cmp(&b_x).unwrap()
             });
         }
-        if ui.button("↓ X").clicked() {
+        if ui.button("X Desc").clicked() {
             rectangles.sort_by(|a, b| {
                 let a_x = a.position.0.x.min(a.position.1.x);
                 let b_x = b.position.0.x.min(b.position.1.x);
                 b_x.partial_cmp(&a_x).unwrap()
             });
         }
-        if ui.button("↑ Y").clicked() {
+        if ui.button("Y Asc").clicked() {
             rectangles.sort_by(|a, b| {
                 let a_y = a.position.0.y.min(a.position.1.y);
                 let b_y = b.position.0.y.min(b.position.1.y);
                 a_y.partial_cmp(&b_y).unwrap()
             });
         }
-        if ui.button("↓ Y").clicked() {
+        if ui.button("Y Desc").clicked() {
             rectangles.sort_by(|a, b| {
                 let a_y = a.position.0.y.min(a.position.1.y);
                 let b_y = b.position.0.y.min(b.position.1.y);
