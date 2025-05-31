@@ -19,6 +19,22 @@ cargo check
 
 # Run with optimizations (faster execution)
 cargo run --release
+
+# Start database (PostgreSQL)
+docker compose up
+
+# Stop database
+docker compose down
+
+# Setup environment files (first time only)
+cp api/.env.example api/.env
+cp app/.env.example app/.env
+
+# Run API server (requires database to be running)
+cargo run -p api
+
+# Run the app
+cargo run -p app
 ```
 
 ## Architecture Overview
