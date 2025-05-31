@@ -8,6 +8,9 @@ use sqlx::{Pool, Postgres};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{encode, Header, EncodingKey, DecodingKey};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::time::{Duration, Instant};
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
@@ -58,6 +61,102 @@ pub struct GitHubEmail {
 pub struct AuthResponse {
     pub token: String,
     pub user: User,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthUrlResponse {
+    pub poll_token: String,
+    pub auth_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PollResponse {
+    pub status: String,
+    pub jwt: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingAuth {
+    pub jwt: Option<String>,
+    pub created_at: Instant,
+    pub csrf_token: String,
+}
+
+#[derive(Clone)]
+pub struct AuthStorage {
+    pending_auths: Arc<Mutex<HashMap<String, PendingAuth>>>,
+}
+
+impl AuthStorage {
+    pub fn new() -> Self {
+        Self {
+            pending_auths: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+    
+    pub fn create_pending_auth(&self, csrf_token: String) -> String {
+        let poll_token = Uuid::new_v4().to_string();
+        let pending_auth = PendingAuth {
+            jwt: None,
+            created_at: Instant::now(),
+            csrf_token,
+        };
+        
+        if let Ok(mut auths) = self.pending_auths.lock() {
+            auths.insert(poll_token.clone(), pending_auth);
+        }
+        
+        poll_token
+    }
+    
+    pub fn complete_auth(&self, csrf_token: &str, jwt: String) -> bool {
+        if let Ok(mut auths) = self.pending_auths.lock() {
+            for (_, pending) in auths.iter_mut() {
+                if pending.csrf_token == csrf_token {
+                    pending.jwt = Some(jwt);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    
+    pub fn get_auth_status(&self, poll_token: &str) -> Option<PollResponse> {
+        if let Ok(mut auths) = self.pending_auths.lock() {
+            if let Some(pending) = auths.get(poll_token) {
+                // 5 minute timeout
+                if pending.created_at.elapsed() > Duration::from_secs(300) {
+                    auths.remove(poll_token);
+                    return Some(PollResponse {
+                        status: "expired".to_string(),
+                        jwt: None,
+                    });
+                }
+                
+                if let Some(jwt) = &pending.jwt {
+                    let jwt = jwt.clone();
+                    auths.remove(poll_token);
+                    return Some(PollResponse {
+                        status: "completed".to_string(),
+                        jwt: Some(jwt),
+                    });
+                } else {
+                    return Some(PollResponse {
+                        status: "pending".to_string(),
+                        jwt: None,
+                    });
+                }
+            }
+        }
+        None
+    }
+    
+    #[allow(dead_code)]
+    pub fn cleanup_expired(&self) {
+        if let Ok(mut auths) = self.pending_auths.lock() {
+            auths.retain(|_, pending| pending.created_at.elapsed() <= Duration::from_secs(300));
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,7 +221,10 @@ impl JwtManager {
     }
 }
 
-pub async fn google_login(config: web::Data<OAuthConfig>) -> impl Responder {
+pub async fn google_login(
+    config: web::Data<OAuthConfig>,
+    auth_storage: web::Data<AuthStorage>,
+) -> impl Responder {
     let client = BasicClient::new(
         ClientId::new(config.google_client_id.clone()),
         Some(ClientSecret::new(config.google_client_secret.clone())),
@@ -131,18 +233,24 @@ pub async fn google_login(config: web::Data<OAuthConfig>) -> impl Responder {
     )
     .set_redirect_uri(RedirectUrl::new(config.google_redirect_url.clone()).unwrap());
 
-    let (auth_url, _csrf_token) = client
+    let (auth_url, csrf_token) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new("email".to_string()))
         .add_scope(Scope::new("profile".to_string()))
         .url();
 
-    HttpResponse::Found()
-        .append_header(("Location", auth_url.to_string()))
-        .finish()
+    let poll_token = auth_storage.create_pending_auth(csrf_token.secret().clone());
+
+    HttpResponse::Ok().json(AuthUrlResponse {
+        poll_token,
+        auth_url: auth_url.to_string(),
+    })
 }
 
-pub async fn github_login(config: web::Data<OAuthConfig>) -> impl Responder {
+pub async fn github_login(
+    config: web::Data<OAuthConfig>,
+    auth_storage: web::Data<AuthStorage>,
+) -> impl Responder {
     let client = BasicClient::new(
         ClientId::new(config.github_client_id.clone()),
         Some(ClientSecret::new(config.github_client_secret.clone())),
@@ -151,20 +259,24 @@ pub async fn github_login(config: web::Data<OAuthConfig>) -> impl Responder {
     )
     .set_redirect_uri(RedirectUrl::new(config.github_redirect_url.clone()).unwrap());
 
-    let (auth_url, _csrf_token) = client
+    let (auth_url, csrf_token) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new("user:email".to_string()))
         .url();
 
-    HttpResponse::Found()
-        .append_header(("Location", auth_url.to_string()))
-        .finish()
+    let poll_token = auth_storage.create_pending_auth(csrf_token.secret().clone());
+
+    HttpResponse::Ok().json(AuthUrlResponse {
+        poll_token,
+        auth_url: auth_url.to_string(),
+    })
 }
 
 pub async fn google_callback(
     query: web::Query<AuthCallback>,
     pool: web::Data<Pool<Postgres>>,
     config: web::Data<OAuthConfig>,
+    auth_storage: web::Data<AuthStorage>,
 ) -> impl Responder {
     let client = BasicClient::new(
         ClientId::new(config.google_client_id.clone()),
@@ -197,7 +309,14 @@ pub async fn google_callback(
             let jwt_manager = JwtManager::new(&config.jwt_secret);
             
             match jwt_manager.generate_token(&user.id.to_string(), &user.email, &user.name) {
-                Ok(token) => HttpResponse::Ok().json(AuthResponse { token, user }),
+                Ok(token) => {
+                    // Save JWT using CSRF token
+                    if auth_storage.complete_auth(&query.state, token.clone()) {
+                        HttpResponse::Ok().json("Authentication completed. You can close this window.")
+                    } else {
+                        HttpResponse::BadRequest().json("Invalid or expired authentication session")
+                    }
+                }
                 Err(_) => HttpResponse::InternalServerError().json("Failed to generate token"),
             }
         }
@@ -209,6 +328,7 @@ pub async fn github_callback(
     query: web::Query<AuthCallback>,
     pool: web::Data<Pool<Postgres>>,
     config: web::Data<OAuthConfig>,
+    auth_storage: web::Data<AuthStorage>,
 ) -> impl Responder {
     let client = BasicClient::new(
         ClientId::new(config.github_client_id.clone()),
@@ -268,7 +388,14 @@ pub async fn github_callback(
             let jwt_manager = JwtManager::new(&config.jwt_secret);
             
             match jwt_manager.generate_token(&user.id.to_string(), &user.email, &user.name) {
-                Ok(token) => HttpResponse::Ok().json(AuthResponse { token, user }),
+                Ok(token) => {
+                    // Save JWT using CSRF token
+                    if auth_storage.complete_auth(&query.state, token.clone()) {
+                        HttpResponse::Ok().json("Authentication completed. You can close this window.")
+                    } else {
+                        HttpResponse::BadRequest().json("Invalid or expired authentication session")
+                    }
+                }
                 Err(_) => HttpResponse::InternalServerError().json("Failed to generate token"),
             }
         }
@@ -323,5 +450,20 @@ async fn create_or_get_user(
                 updated_at: now,
             })
         }
+    }
+}
+
+pub async fn poll_auth(
+    path: web::Path<String>,
+    auth_storage: web::Data<AuthStorage>,
+) -> impl Responder {
+    let poll_token = path.into_inner();
+    
+    match auth_storage.get_auth_status(&poll_token) {
+        Some(response) => HttpResponse::Ok().json(response),
+        None => HttpResponse::NotFound().json(PollResponse {
+            status: "not_found".to_string(),
+            jwt: None,
+        }),
     }
 }

@@ -10,12 +10,33 @@ use app::state::AppState;
 mod pages {
     pub mod detail;
     pub mod list;
+    pub mod login;
 }
 
 use pages::{
     detail::{self, SelectedRect},
     list,
+    login,
 };
+
+#[derive(Resource, Default)]
+pub struct AuthState {
+    pub jwt: Option<String>,
+}
+
+impl AuthState {
+    pub fn is_authenticated(&self) -> bool {
+        self.jwt.is_some()
+    }
+    
+    pub fn set_jwt(&mut self, jwt: String) {
+        self.jwt = Some(jwt);
+    }
+    
+    pub fn clear(&mut self) {
+        self.jwt = None;
+    }
+}
 
 fn main() {
     App::new()
@@ -24,7 +45,16 @@ fn main() {
             enable_multipass_for_primary_context: true,
         })
         .init_state::<AppState>()
+        .init_resource::<AuthState>()
         .add_systems(Startup, setup)
+        // login page
+        .add_systems(OnEnter(AppState::Login), login::setup)
+        .add_systems(Update, login::update.run_if(in_state(AppState::Login)))
+        .add_systems(
+            EguiContextPass,
+            login::ui_system.run_if(in_state(AppState::Login)),
+        )
+        .add_systems(OnExit(AppState::Login), login::cleanup)
         // list page
         .add_systems(OnEnter(AppState::List), list::setup)
         .add_systems(Update, list::update.run_if(in_state(AppState::List)))
