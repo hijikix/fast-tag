@@ -21,10 +21,10 @@ cargo check
 cargo run --release
 
 # Start database (PostgreSQL)
-docker-compose up -d
+docker compose up
 
 # Stop database
-docker-compose down
+docker compose down
 
 # Setup environment files (first time only)
 cp api/.env.example api/.env
