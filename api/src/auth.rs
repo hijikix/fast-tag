@@ -60,6 +60,11 @@ pub struct AuthResponse {
     pub user: User,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AuthUrlResponse {
+    pub auth_url: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AuthCallback {
     pub code: String,
@@ -137,9 +142,9 @@ pub async fn google_login(config: web::Data<OAuthConfig>) -> impl Responder {
         .add_scope(Scope::new("profile".to_string()))
         .url();
 
-    HttpResponse::Found()
-        .append_header(("Location", auth_url.to_string()))
-        .finish()
+    HttpResponse::Ok().json(AuthUrlResponse {
+        auth_url: auth_url.to_string(),
+    })
 }
 
 pub async fn github_login(config: web::Data<OAuthConfig>) -> impl Responder {
@@ -156,9 +161,9 @@ pub async fn github_login(config: web::Data<OAuthConfig>) -> impl Responder {
         .add_scope(Scope::new("user:email".to_string()))
         .url();
 
-    HttpResponse::Found()
-        .append_header(("Location", auth_url.to_string()))
-        .finish()
+    HttpResponse::Ok().json(AuthUrlResponse {
+        auth_url: auth_url.to_string(),
+    })
 }
 
 pub async fn google_callback(
