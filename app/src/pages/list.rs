@@ -1,5 +1,6 @@
 use crate::ui::components::egui_common;
 use crate::app::state::AppState;
+use crate::auth::{AuthState, UserState, fetch_user_info};
 use bevy::prelude::*;
 use bevy::ui::Interaction;
 use bevy_egui::{EguiContexts, egui};
@@ -15,7 +16,11 @@ pub struct ListData {
     button_entity: Entity,
 }
 
-pub fn setup(mut commands: Commands) {
+pub fn setup(
+    mut commands: Commands,
+    auth_state: Res<AuthState>,
+    mut user_state: ResMut<UserState>,
+) {
     println!("list setup");
     let button_entity = commands
         .spawn((
@@ -51,6 +56,24 @@ pub fn setup(mut commands: Commands) {
         ))
         .id();
     commands.insert_resource(ListData { button_entity });
+
+    // Fetch user info if authenticated and not already fetching
+    if auth_state.is_authenticated() && user_state.user.is_none() && !user_state.is_fetching {
+        if let Some(jwt) = auth_state.get_jwt() {
+            let jwt = jwt.clone();
+            user_state.start_fetching();
+            
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(fetch_user_info(&jwt)) {
+                Ok(user) => {
+                    user_state.set_user(user);
+                }
+                Err(error) => {
+                    user_state.set_error(error);
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::type_complexity)]
@@ -102,10 +125,25 @@ pub fn ui_system(
     mut contexts: EguiContexts,
     current_state: Res<State<AppState>>,
     next_state: ResMut<NextState<AppState>>,
+    user_state: Res<UserState>,
 ) {
     egui_common::ui_top_panel(&mut contexts, current_state, next_state);
 
     egui::Window::new("Hello").show(contexts.ctx_mut(), |ui| {
+        // Display user name at the top
+        if let Some(user) = &user_state.user {
+            ui.horizontal(|ui| {
+                ui.label("Welcome,");
+                ui.strong(&user.name);
+            });
+            ui.separator();
+        } else if user_state.is_fetching {
+            ui.label("Loading user info...");
+            ui.separator();
+        } else if let Some(error) = &user_state.fetch_error {
+            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+            ui.separator();
+        }
         egui::TopBottomPanel::top("top_panel")
             .resizable(true)
             .min_height(32.0)
