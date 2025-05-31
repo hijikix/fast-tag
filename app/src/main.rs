@@ -19,6 +19,25 @@ use pages::{
     login,
 };
 
+#[derive(Resource, Default)]
+pub struct AuthState {
+    pub jwt: Option<String>,
+}
+
+impl AuthState {
+    pub fn is_authenticated(&self) -> bool {
+        self.jwt.is_some()
+    }
+    
+    pub fn set_jwt(&mut self, jwt: String) {
+        self.jwt = Some(jwt);
+    }
+    
+    pub fn clear(&mut self) {
+        self.jwt = None;
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
@@ -26,6 +45,7 @@ fn main() {
             enable_multipass_for_primary_context: true,
         })
         .init_state::<AppState>()
+        .init_resource::<AuthState>()
         .add_systems(Startup, setup)
         // login page
         .add_systems(OnEnter(AppState::Login), login::setup)

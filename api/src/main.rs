@@ -37,6 +37,9 @@ async fn main() -> std::io::Result<()> {
     let pool = sqlx::PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to database");
+    
+    // Create authentication storage
+    let auth_storage = auth::AuthStorage::new();
 
     // Run migrations
     println!("Running database migrations...");
@@ -52,6 +55,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(oauth_config.clone()))
+            .app_data(web::Data::new(auth_storage.clone()))
             .route("/health", web::get().to(health_check))
             .route("/auth/google", web::get().to(auth::google_login))
             .route(
@@ -63,6 +67,7 @@ async fn main() -> std::io::Result<()> {
                 "/auth/github/callback",
                 web::get().to(auth::github_callback),
             )
+            .route("/auth/poll/{poll_token}", web::get().to(auth::poll_auth))
     })
     .bind("127.0.0.1:8080")?
     .run()
