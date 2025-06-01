@@ -4,18 +4,23 @@ mod app;
 mod ui;
 mod core;
 mod io;
+mod auth;
 use bevy_egui::{EguiContextPass, EguiPlugin};
 use app::state::AppState;
+use auth::{AuthState, UserState};
 
 mod pages {
     pub mod detail;
     pub mod list;
+    pub mod login;
 }
 
 use pages::{
     detail::{self, SelectedRect},
     list,
+    login,
 };
+
 
 fn main() {
     App::new()
@@ -24,7 +29,17 @@ fn main() {
             enable_multipass_for_primary_context: true,
         })
         .init_state::<AppState>()
+        .init_resource::<AuthState>()
+        .init_resource::<UserState>()
         .add_systems(Startup, setup)
+        // login page
+        .add_systems(OnEnter(AppState::Login), login::setup)
+        .add_systems(Update, login::update.run_if(in_state(AppState::Login)))
+        .add_systems(
+            EguiContextPass,
+            login::ui_system.run_if(in_state(AppState::Login)),
+        )
+        .add_systems(OnExit(AppState::Login), login::cleanup)
         // list page
         .add_systems(OnEnter(AppState::List), list::setup)
         .add_systems(Update, list::update.run_if(in_state(AppState::List)))

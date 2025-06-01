@@ -37,6 +37,9 @@ async fn main() -> std::io::Result<()> {
     let pool = sqlx::PgPool::connect(&database_url)
         .await
         .expect("Failed to connect to database");
+    
+    // Create authentication storage
+    let auth_storage = auth::AuthStorage::new(pool.clone());
 
     // Run migrations
     println!("Running database migrations...");
@@ -47,11 +50,24 @@ async fn main() -> std::io::Result<()> {
             std::process::exit(1);
         }
     }
+    
+    // Start cleanup task for expired auth requests
+    let auth_storage_cleanup = auth_storage.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // 5 minutes
+        loop {
+            interval.tick().await;
+            if let Err(e) = auth_storage_cleanup.cleanup_expired().await {
+                eprintln!("Failed to cleanup expired auth requests: {}", e);
+            }
+        }
+    });
 
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(oauth_config.clone()))
+            .app_data(web::Data::new(auth_storage.clone()))
             .route("/health", web::get().to(health_check))
             .route("/auth/google", web::get().to(auth::google_login))
             .route(
@@ -63,6 +79,8 @@ async fn main() -> std::io::Result<()> {
                 "/auth/github/callback",
                 web::get().to(auth::github_callback),
             )
+            .route("/auth/poll/{poll_token}", web::get().to(auth::poll_auth))
+            .route("/me", web::get().to(auth::get_user_info))
     })
     .bind("127.0.0.1:8080")?
     .run()
