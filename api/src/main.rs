@@ -2,6 +2,7 @@ use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use sqlx::{Pool, Postgres};
 
 mod auth;
+mod projects;
 
 async fn health_check(pool: web::Data<Pool<Postgres>>) -> impl Responder {
     match sqlx::query("SELECT 1").fetch_one(pool.get_ref()).await {
@@ -81,6 +82,8 @@ async fn main() -> std::io::Result<()> {
             )
             .route("/auth/poll/{poll_token}", web::get().to(auth::poll_auth))
             .route("/me", web::get().to(auth::get_user_info))
+            .route("/projects", web::post().to(projects::create_project))
+            .route("/projects", web::get().to(projects::list_projects))
     })
     .bind("127.0.0.1:8080")?
     .run()

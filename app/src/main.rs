@@ -7,18 +7,20 @@ mod io;
 mod auth;
 use bevy_egui::{EguiContextPass, EguiPlugin};
 use app::state::AppState;
-use auth::{AuthState, UserState};
+use auth::{AuthState, UserState, ProjectsState};
 
 mod pages {
     pub mod detail;
     pub mod list;
     pub mod login;
+    pub mod projects;
 }
 
 use pages::{
     detail::{self, SelectedRect},
     list,
     login,
+    projects,
 };
 
 
@@ -31,6 +33,7 @@ fn main() {
         .init_state::<AppState>()
         .init_resource::<AuthState>()
         .init_resource::<UserState>()
+        .init_resource::<ProjectsState>()
         .add_systems(Startup, setup)
         // login page
         .add_systems(OnEnter(AppState::Login), login::setup)
@@ -48,6 +51,14 @@ fn main() {
             list::ui_system.run_if(in_state(AppState::List)),
         )
         .add_systems(OnExit(AppState::List), list::cleanup)
+        // projects page
+        .add_systems(OnEnter(AppState::Projects), projects::setup)
+        .add_systems(Update, projects::update.run_if(in_state(AppState::Projects)))
+        .add_systems(
+            EguiContextPass,
+            projects::ui_system.run_if(in_state(AppState::Projects)),
+        )
+        .add_systems(OnExit(AppState::Projects), projects::cleanup)
         // detail page
         .init_gizmo_group::<SelectedRect>()
         .init_resource::<detail::Parameters>()

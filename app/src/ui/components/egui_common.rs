@@ -14,6 +14,13 @@ pub fn ui_top_panel(
             ui.separator();
 
             if ui
+                .selectable_label(*current_state == AppState::Projects, "📁 Projects")
+                .clicked()
+            {
+                next_state.set(AppState::Projects)
+            }
+
+            if ui
                 .selectable_label(*current_state == AppState::List, "✨ List")
                 .clicked()
             {

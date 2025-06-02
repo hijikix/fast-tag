@@ -5,5 +5,6 @@ pub enum AppState {
     #[default]
     Login,
     List,
+    Projects,
     Detail,
 }
