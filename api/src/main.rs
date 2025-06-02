@@ -84,6 +84,9 @@ async fn main() -> std::io::Result<()> {
             .route("/me", web::get().to(auth::get_user_info))
             .route("/projects", web::post().to(projects::create_project))
             .route("/projects", web::get().to(projects::list_projects))
+            .route("/projects/{id}", web::get().to(projects::get_project))
+            .route("/projects/{id}", web::put().to(projects::update_project))
+            .route("/projects/{id}", web::delete().to(projects::delete_project))
     })
     .bind("127.0.0.1:8080")?
     .run()

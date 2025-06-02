@@ -5,7 +5,7 @@ use bevy_egui::{EguiContexts, egui};
 pub fn ui_top_panel(
     contexts: &mut EguiContexts,
     current_state: Res<State<AppState>>,
-    mut next_state: ResMut<NextState<AppState>>,
+    next_state: &mut ResMut<NextState<AppState>>,
 ) {
     egui::TopBottomPanel::top("top_panel").show(contexts.ctx_mut(), |ui| {
         egui::menu::bar(ui, |ui| {
@@ -18,6 +18,13 @@ pub fn ui_top_panel(
                 .clicked()
             {
                 next_state.set(AppState::Projects)
+            }
+
+            if ui
+                .selectable_label(*current_state == AppState::ProjectSettings, "🔧 Settings")
+                .clicked()
+            {
+                next_state.set(AppState::ProjectSettings)
             }
 
             if ui

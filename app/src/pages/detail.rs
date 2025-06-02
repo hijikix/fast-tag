@@ -302,12 +302,12 @@ pub fn ui_system(
     mut commands: Commands,
     mut contexts: EguiContexts,
     current_state: Res<State<AppState>>,
-    next_state: ResMut<NextState<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
     mut rectangles: ResMut<Rectangles>,
     mut selected_index: ResMut<SelectedRectangleIndex>,
     mut detail_data: ResMut<DetailData>,
 ) {
-    egui_common::ui_top_panel(&mut contexts, current_state, next_state);
+    egui_common::ui_top_panel(&mut contexts, current_state, &mut next_state);
 
     let rect_count_before = rectangles.0.len();
     detail_ui::render_side_panels(&mut contexts, &mut rectangles.0, &mut selected_index.0);

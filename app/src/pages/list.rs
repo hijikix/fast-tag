@@ -124,10 +124,10 @@ fn lorem_ipsum(ui: &mut egui::Ui) {
 pub fn ui_system(
     mut contexts: EguiContexts,
     current_state: Res<State<AppState>>,
-    next_state: ResMut<NextState<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
     user_state: Res<UserState>,
 ) {
-    egui_common::ui_top_panel(&mut contexts, current_state, next_state);
+    egui_common::ui_top_panel(&mut contexts, current_state, &mut next_state);
 
     egui::Window::new("Hello").show(contexts.ctx_mut(), |ui| {
         // Display user name at the top
