@@ -3,6 +3,9 @@ use sqlx::{Pool, Postgres};
 
 mod auth;
 mod projects;
+mod tasks;
+mod storage;
+mod sync;
 
 async fn health_check(pool: web::Data<Pool<Postgres>>) -> impl Responder {
     match sqlx::query("SELECT 1").fetch_one(pool.get_ref()).await {
@@ -87,6 +90,17 @@ async fn main() -> std::io::Result<()> {
             .route("/projects/{id}", web::get().to(projects::get_project))
             .route("/projects/{id}", web::put().to(projects::update_project))
             .route("/projects/{id}", web::delete().to(projects::delete_project))
+            .route("/projects/{project_id}/tasks", web::post().to(tasks::create_task))
+            .route("/projects/{project_id}/tasks", web::get().to(tasks::list_tasks))
+            .route("/projects/{project_id}/tasks/{task_id}", web::get().to(tasks::get_task))
+            .route("/projects/{project_id}/tasks/{task_id}", web::put().to(tasks::update_task))
+            .route("/projects/{project_id}/tasks/{task_id}", web::delete().to(tasks::delete_task))
+            .route("/projects/{project_id}/storage/upload", web::post().to(storage::handlers::upload_file))
+            .route("/projects/{project_id}/storage/{key}", web::get().to(storage::handlers::download_file))
+            .route("/projects/{project_id}/storage/{key}/url", web::get().to(storage::handlers::get_presigned_url))
+            .route("/projects/{project_id}/storage", web::get().to(storage::handlers::list_objects))
+            .route("/projects/{project_id}/sync", web::post().to(sync::sync_storage_to_tasks))
+            .route("/projects/{project_id}/sync/{sync_id}", web::get().to(sync::get_sync_status))
     })
     .bind("127.0.0.1:8080")?
     .run()

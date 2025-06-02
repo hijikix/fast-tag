@@ -12,6 +12,7 @@ pub struct Project {
     pub name: String,
     pub description: Option<String>,
     pub owner_id: Uuid,
+    pub storage_config: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -29,12 +30,14 @@ pub struct ProjectMember {
 pub struct CreateProjectRequest {
     pub name: String,
     pub description: Option<String>,
+    pub storage_config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateProjectRequest {
     pub name: String,
     pub description: Option<String>,
+    pub storage_config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,8 +76,15 @@ pub async fn create_project(
         return HttpResponse::BadRequest().json("Project name too long (max 255 characters)");
     }
 
+    // Validate storage config if provided
+    if let Some(storage_config) = &payload.storage_config {
+        if let Err(e) = validate_storage_config(storage_config) {
+            return HttpResponse::BadRequest().json(format!("Invalid storage configuration: {}", e));
+        }
+    }
+
     // Create project
-    match create_project_in_db(&pool, &payload.name, payload.description.as_deref(), user_id).await {
+    match create_project_in_db(&pool, &payload.name, payload.description.as_deref(), payload.storage_config.as_ref(), user_id).await {
         Ok(project) => HttpResponse::Created().json(ProjectResponse { project }),
         Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
             HttpResponse::Conflict().json("Project name already exists for this user")
@@ -168,8 +178,15 @@ pub async fn update_project(
         return HttpResponse::BadRequest().json("Project name too long (max 255 characters)");
     }
 
+    // Validate storage config if provided
+    if let Some(storage_config) = &payload.storage_config {
+        if let Err(e) = validate_storage_config(storage_config) {
+            return HttpResponse::BadRequest().json(format!("Invalid storage configuration: {}", e));
+        }
+    }
+
     // Update project
-    match update_project_in_db(&pool, project_id, &payload.name, payload.description.as_deref(), user_id).await {
+    match update_project_in_db(&pool, project_id, &payload.name, payload.description.as_deref(), payload.storage_config.as_ref(), user_id).await {
         Ok(Some(project)) => HttpResponse::Ok().json(ProjectResponse { project }),
         Ok(None) => HttpResponse::NotFound().json("Project not found or access denied"),
         Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
@@ -213,6 +230,7 @@ async fn create_project_in_db(
     pool: &Pool<Postgres>,
     name: &str,
     description: Option<&str>,
+    storage_config: Option<&serde_json::Value>,
     owner_id: Uuid,
 ) -> Result<Project, sqlx::Error> {
     let project_id = Uuid::new_v4();
@@ -223,11 +241,12 @@ async fn create_project_in_db(
 
     // Insert project
     sqlx::query(
-        "INSERT INTO projects (id, name, description, owner_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"
+        "INSERT INTO projects (id, name, description, storage_config, owner_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)"
     )
     .bind(&project_id)
     .bind(name)
     .bind(description)
+    .bind(storage_config)
     .bind(&owner_id)
     .bind(now)
     .bind(now)
@@ -255,6 +274,7 @@ async fn create_project_in_db(
         name: name.to_string(),
         description: description.map(String::from),
         owner_id,
+        storage_config: storage_config.cloned(),
         created_at: now,
         updated_at: now,
     })
@@ -263,7 +283,7 @@ async fn create_project_in_db(
 async fn get_user_projects(pool: &Pool<Postgres>, user_id: Uuid) -> Result<Vec<Project>, sqlx::Error> {
     sqlx::query_as::<_, Project>(
         r#"
-        SELECT DISTINCT p.id, p.name, p.description, p.owner_id, p.created_at, p.updated_at
+        SELECT DISTINCT p.id, p.name, p.description, p.storage_config, p.owner_id, p.created_at, p.updated_at
         FROM projects p
         INNER JOIN project_members pm ON p.id = pm.project_id
         WHERE pm.user_id = $1
@@ -282,7 +302,7 @@ async fn get_project_by_id(
 ) -> Result<Option<Project>, sqlx::Error> {
     sqlx::query_as::<_, Project>(
         r#"
-        SELECT DISTINCT p.id, p.name, p.description, p.owner_id, p.created_at, p.updated_at
+        SELECT DISTINCT p.id, p.name, p.description, p.storage_config, p.owner_id, p.created_at, p.updated_at
         FROM projects p
         INNER JOIN project_members pm ON p.id = pm.project_id
         WHERE p.id = $1 AND pm.user_id = $2
@@ -299,6 +319,7 @@ async fn update_project_in_db(
     project_id: Uuid,
     name: &str,
     description: Option<&str>,
+    storage_config: Option<&serde_json::Value>,
     user_id: Uuid,
 ) -> Result<Option<Project>, sqlx::Error> {
     let now = Utc::now();
@@ -326,13 +347,14 @@ async fn update_project_in_db(
     let updated_project = sqlx::query_as::<_, Project>(
         r#"
         UPDATE projects 
-        SET name = $1, description = $2, updated_at = $3
-        WHERE id = $4
-        RETURNING id, name, description, owner_id, created_at, updated_at
+        SET name = $1, description = $2, storage_config = $3, updated_at = $4
+        WHERE id = $5
+        RETURNING id, name, description, storage_config, owner_id, created_at, updated_at
         "#
     )
     .bind(name)
     .bind(description)
+    .bind(storage_config)
     .bind(now)
     .bind(project_id)
     .fetch_optional(pool)
@@ -404,4 +426,13 @@ fn extract_user_claims(
         Ok(claims) => Ok(claims),
         Err(_) => Err(HttpResponse::Unauthorized().json("Invalid or expired token")),
     }
+}
+
+fn validate_storage_config(config: &serde_json::Value) -> Result<(), String> {
+    use crate::storage::config::StorageConfig;
+    
+    let storage_config: StorageConfig = serde_json::from_value(config.clone())
+        .map_err(|e| format!("Invalid JSON format: {}", e))?;
+    
+    storage_config.validate()
 }
