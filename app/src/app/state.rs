@@ -6,5 +6,6 @@ pub enum AppState {
     Login,
     List,
     Projects,
+    ProjectSettings,
     Detail,
 }

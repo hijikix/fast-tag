@@ -120,6 +120,12 @@ pub struct CreateProjectRequest {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct UpdateProjectRequest {
+    pub name: String,
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ProjectResponse {
     pub project: Project,
@@ -204,5 +210,50 @@ pub async fn create_project(jwt: &str, name: &str, description: Option<&str>) ->
         Ok(project_response.project)
     } else {
         Err(format!("API error: {}", response.status()))
+    }
+}
+
+pub async fn update_project(jwt: &str, project_id: &str, name: &str, description: Option<&str>) -> Result<Project, String> {
+    let client = reqwest::Client::new();
+    let request_body = UpdateProjectRequest {
+        name: name.to_string(),
+        description: description.map(|s| s.to_string()),
+    };
+    
+    let response = client
+        .put(&format!("http://localhost:8080/projects/{}", project_id))
+        .bearer_auth(jwt)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if response.status().is_success() {
+        let project_response: ProjectResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+        Ok(project_response.project)
+    } else {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        Err(format!("API error: {}", error_text))
+    }
+}
+
+pub async fn delete_project(jwt: &str, project_id: &str) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    
+    let response = client
+        .delete(&format!("http://localhost:8080/projects/{}", project_id))
+        .bearer_auth(jwt)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        Err(format!("API error: {}", error_text))
     }
 }

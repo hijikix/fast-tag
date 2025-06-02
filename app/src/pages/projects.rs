@@ -48,12 +48,12 @@ pub fn update() {
 pub fn ui_system(
     mut contexts: EguiContexts,
     current_state: Res<State<AppState>>,
-    next_state: ResMut<NextState<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
     mut projects_state: ResMut<ProjectsState>,
     mut page_data: ResMut<ProjectsPageData>,
     auth_state: Res<AuthState>,
 ) {
-    egui_common::ui_top_panel(&mut contexts, current_state, next_state);
+    egui_common::ui_top_panel(&mut contexts, current_state, &mut next_state);
 
     egui::CentralPanel::default().show(contexts.ctx_mut(), |ui| {
         ui.vertical_centered(|ui| {
@@ -130,6 +130,12 @@ pub fn ui_system(
                                 if ui.button("Open").clicked() {
                                     // TODO: Navigate to project detail/annotations
                                     println!("Opening project: {}", project.name);
+                                }
+                                
+                                if ui.button("🔧 Settings").clicked() {
+                                    // Navigate to project settings page
+                                    println!("Opening settings for project: {}", project.name);
+                                    next_state.set(AppState::ProjectSettings);
                                 }
                             });
                         });

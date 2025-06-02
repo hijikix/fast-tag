@@ -14,6 +14,7 @@ mod pages {
     pub mod list;
     pub mod login;
     pub mod projects;
+    pub mod project_settings;
 }
 
 use pages::{
@@ -21,6 +22,7 @@ use pages::{
     list,
     login,
     projects,
+    project_settings,
 };
 
 
@@ -59,6 +61,18 @@ fn main() {
             projects::ui_system.run_if(in_state(AppState::Projects)),
         )
         .add_systems(OnExit(AppState::Projects), projects::cleanup)
+        // project settings page
+        .add_systems(OnEnter(AppState::ProjectSettings), project_settings::setup)
+        .add_systems(Update, (
+            project_settings::update,
+            project_settings::handle_save_project_task,
+            project_settings::handle_delete_project_task,
+        ).run_if(in_state(AppState::ProjectSettings)))
+        .add_systems(
+            EguiContextPass,
+            project_settings::ui_system.run_if(in_state(AppState::ProjectSettings)),
+        )
+        .add_systems(OnExit(AppState::ProjectSettings), project_settings::cleanup)
         // detail page
         .init_gizmo_group::<SelectedRect>()
         .init_resource::<detail::Parameters>()
