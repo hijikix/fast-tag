@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Resource, Default)]
 pub struct AuthState {
@@ -91,6 +91,117 @@ pub async fn fetch_user_info(jwt: &str) -> Result<User, String> {
             .await
             .map_err(|e| format!("Failed to parse response: {}", e))?;
         Ok(user_info.user)
+    } else {
+        Err(format!("API error: {}", response.status()))
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Project {
+    #[allow(dead_code)]
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    #[allow(dead_code)]
+    pub owner_id: String,
+    pub created_at: String,
+    #[allow(dead_code)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectsListResponse {
+    pub projects: Vec<Project>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateProjectRequest {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectResponse {
+    pub project: Project,
+}
+
+#[derive(Resource, Default)]
+pub struct ProjectsState {
+    pub projects: Vec<Project>,
+    pub fetch_error: Option<String>,
+    pub is_fetching: bool,
+}
+
+impl ProjectsState {
+    pub fn set_projects(&mut self, projects: Vec<Project>) {
+        self.projects = projects;
+        self.fetch_error = None;
+        self.is_fetching = false;
+    }
+    
+    pub fn set_error(&mut self, error: String) {
+        self.fetch_error = Some(error);
+        self.is_fetching = false;
+    }
+    
+    pub fn start_fetching(&mut self) {
+        self.is_fetching = true;
+        self.fetch_error = None;
+    }
+    
+    pub fn add_project(&mut self, project: Project) {
+        self.projects.push(project);
+    }
+    
+    #[allow(dead_code)]
+    pub fn clear(&mut self) {
+        self.projects.clear();
+        self.fetch_error = None;
+        self.is_fetching = false;
+    }
+}
+
+pub async fn fetch_projects(jwt: &str) -> Result<Vec<Project>, String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get("http://localhost:8080/projects")
+        .bearer_auth(jwt)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if response.status().is_success() {
+        let projects_response: ProjectsListResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+        Ok(projects_response.projects)
+    } else {
+        Err(format!("API error: {}", response.status()))
+    }
+}
+
+pub async fn create_project(jwt: &str, name: &str, description: Option<&str>) -> Result<Project, String> {
+    let client = reqwest::Client::new();
+    let request_body = CreateProjectRequest {
+        name: name.to_string(),
+        description: description.map(|s| s.to_string()),
+    };
+    
+    let response = client
+        .post("http://localhost:8080/projects")
+        .bearer_auth(jwt)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if response.status().is_success() {
+        let project_response: ProjectResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+        Ok(project_response.project)
     } else {
         Err(format!("API error: {}", response.status()))
     }

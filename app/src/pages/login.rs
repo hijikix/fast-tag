@@ -76,7 +76,7 @@ pub fn update(
                 Ok(Some(jwt)) => {
                     login_resource.state = LoginState::Success(jwt.clone());
                     auth_state.set_jwt(jwt);
-                    next_state.set(AppState::List);
+                    next_state.set(AppState::Projects);
                 }
                 Ok(None) => {
                     // Authentication not yet completed
@@ -88,8 +88,8 @@ pub fn update(
             }
         }
         LoginState::Success(_) => {
-            // Already logged in successfully, transition to List screen
-            next_state.set(AppState::List);
+            // Already logged in successfully, transition to Projects screen
+            next_state.set(AppState::Projects);
         }
         _ => {}
     }
@@ -148,7 +148,7 @@ pub fn ui_system(
             
             // Development skip button
             if ui.button("Skip (Development)").clicked() {
-                next_state.set(AppState::List);
+                next_state.set(AppState::Projects);
             }
         });
     });
