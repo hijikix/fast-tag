@@ -32,7 +32,7 @@ cargo build
 # Run the application
 cargo run -p app
 
-# Run API server (requires database)
+# Run API server (requires database and MinIO)
 cargo run -p api
 
 # Check code without building
@@ -45,13 +45,23 @@ cargo build --release
 cargo run --release
 ```
 
-### Database Management
+### Infrastructure Management
 ```bash
-# Start database
+# Start all services (PostgreSQL + MinIO)
 docker compose up
 
-# Stop database
+# Start services in background
+docker compose up -d
+
+# Stop all services
 docker compose down
+
+# View logs
+docker compose logs
+
+# Access MinIO Console: http://localhost:9001
+# Username: minioadmin
+# Password: minioadmin
 ```
 
 ## Code Quality

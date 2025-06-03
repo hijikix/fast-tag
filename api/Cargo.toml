@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 actix-web = "4"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
 serde_json = "1"
 serde = { version = "1.0", features = ["derive"] }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "mysql", "chrono", "uuid", "migrate"] }
@@ -16,3 +16,14 @@ oauth2 = "4"
 url = "2"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+bytes = "1.0"
+mime_guess = "2.0"
+
+# AWS S3 / MinIO - using rusoto for better stability
+rusoto_core = "0.48"
+rusoto_s3 = "0.48"
+rusoto_credential = "0.48"
+
+# For now, implement simpler versions for Azure and GCS
+# These can be expanded with proper SDKs later
