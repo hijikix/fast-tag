@@ -1,7 +1,7 @@
 use crate::app::state::AppState;
 use crate::auth::AuthState;
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy_egui::{EguiContexts, EguiContextPass, egui};
 use reqwest;
 use serde::Deserialize;
 use std::time::{Duration, Instant};
@@ -18,8 +18,9 @@ struct PollResponse {
     jwt: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 enum LoginState {
+    #[default]
     Idle,
     WaitingForAuth {
         poll_token: String,
@@ -27,12 +28,6 @@ enum LoginState {
     },
     Success(String), // JWT token
     Error(String),
-}
-
-impl Default for LoginState {
-    fn default() -> Self {
-        LoginState::Idle
-    }
 }
 
 #[derive(Resource, Default)]
@@ -215,4 +210,18 @@ async fn poll_for_jwt(poll_token: &str) -> Result<Option<String>, String> {
 
 pub fn cleanup(_commands: Commands) {
     println!("login cleanup");
+}
+
+pub struct LoginPlugin;
+
+impl Plugin for LoginPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(AppState::Login), setup)
+           .add_systems(Update, update.run_if(in_state(AppState::Login)))
+           .add_systems(
+               EguiContextPass,
+               ui_system.run_if(in_state(AppState::Login)),
+           )
+           .add_systems(OnExit(AppState::Login), cleanup);
+    }
 }

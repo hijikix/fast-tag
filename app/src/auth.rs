@@ -221,7 +221,7 @@ pub async fn update_project(jwt: &str, project_id: &str, name: &str, description
     };
     
     let response = client
-        .put(&format!("http://localhost:8080/projects/{}", project_id))
+        .put(format!("http://localhost:8080/projects/{}", project_id))
         .bearer_auth(jwt)
         .json(&request_body)
         .send()
@@ -244,7 +244,7 @@ pub async fn delete_project(jwt: &str, project_id: &str) -> Result<(), String> {
     let client = reqwest::Client::new();
     
     let response = client
-        .delete(&format!("http://localhost:8080/projects/{}", project_id))
+        .delete(format!("http://localhost:8080/projects/{}", project_id))
         .bearer_auth(jwt)
         .send()
         .await

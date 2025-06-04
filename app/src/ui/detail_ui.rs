@@ -263,6 +263,7 @@ pub fn render_side_panels(
         });
 }
 
+#[allow(clippy::ptr_arg)]
 pub fn render_rectangle_editor_window(
     contexts: &mut EguiContexts,
     rectangles: &mut Vec<Rectangle>,

@@ -12,7 +12,7 @@ use bevy::input::mouse::{MouseButtonInput, MouseWheel};
 use bevy::prelude::*;
 use bevy::text::Text2d;
 use bevy::window::PrimaryWindow;
-use bevy_egui::EguiContexts;
+use bevy_egui::{EguiContexts, EguiContextPass};
 
 #[derive(Resource, Default)]
 pub struct Parameters {
@@ -331,4 +331,24 @@ pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
     }
     
     commands.remove_resource::<CommandHistory>();
+}
+
+pub struct DetailPlugin;
+
+impl Plugin for DetailPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_gizmo_group::<SelectedRect>()
+           .init_resource::<Parameters>()
+           .init_resource::<Rectangles>()
+           .init_resource::<SelectedRectangleIndex>()
+           .init_resource::<InteractionState>()
+           .init_resource::<InteractionHandlers>()
+           .add_systems(OnEnter(AppState::Detail), setup)
+           .add_systems(Update, update.run_if(in_state(AppState::Detail)))
+           .add_systems(
+               EguiContextPass,
+               ui_system.run_if(in_state(AppState::Detail)),
+           )
+           .add_systems(OnExit(AppState::Detail), cleanup);
+    }
 }

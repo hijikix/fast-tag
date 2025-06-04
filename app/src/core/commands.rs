@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use crate::core::rectangle::Rectangle;
 
 #[derive(Clone, Debug)]
+#[allow(clippy::enum_variant_names)]
 pub enum Command {
     AddRectangle { rectangle: Rectangle },
     DeleteRectangle { index: usize, rectangle: Rectangle },

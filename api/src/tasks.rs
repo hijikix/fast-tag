@@ -273,8 +273,8 @@ async fn create_task_in_db(
         RETURNING id, project_id, name, resource_url, status, created_at, updated_at, completed_at
         "#
     )
-    .bind(&task_id)
-    .bind(&project_id)
+    .bind(task_id)
+    .bind(project_id)
     .bind(name)
     .bind(resource_url)
     .bind(now)
