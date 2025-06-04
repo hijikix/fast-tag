@@ -3,7 +3,7 @@ use crate::app::state::AppState;
 use crate::auth::{AuthState, ProjectsState};
 use crate::sync::{SyncState, SyncRequestEvent, SyncRequest, SyncCompletedEvent, SyncErrorEvent};
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy_egui::{EguiContexts, EguiContextPass, egui};
 use uuid::Uuid;
 
 #[derive(Component)]
@@ -55,6 +55,7 @@ pub fn update() {
     // No update logic needed for project settings page currently
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn ui_system(
     mut commands: Commands,
     mut contexts: EguiContexts,
@@ -148,10 +149,8 @@ pub fn ui_system(
                                     if page_data.is_saving {
                                         ui.add(egui::Spinner::new());
                                     }
-                                } else {
-                                    if ui.button("Edit").clicked() {
-                                        page_data.is_editing = true;
-                                    }
+                                } else if ui.button("Edit").clicked() {
+                                    page_data.is_editing = true;
                                 }
                             });
                         });
@@ -474,5 +473,24 @@ pub fn handle_delete_project_task(
             page_data.is_deleting = false;
         }
         commands.entity(entity).despawn();
+    }
+}
+
+pub struct ProjectSettingsPlugin;
+
+impl Plugin for ProjectSettingsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(AppState::ProjectSettings), setup)
+           .add_systems(Update, (
+               update,
+               handle_save_project_task,
+               handle_delete_project_task,
+               handle_sync_events,
+           ).run_if(in_state(AppState::ProjectSettings)))
+           .add_systems(
+               EguiContextPass,
+               ui_system.run_if(in_state(AppState::ProjectSettings)),
+           )
+           .add_systems(OnExit(AppState::ProjectSettings), cleanup);
     }
 }

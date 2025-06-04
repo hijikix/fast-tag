@@ -3,7 +3,7 @@ use crate::app::state::AppState;
 use crate::auth::{AuthState, UserState, fetch_user_info};
 use bevy::prelude::*;
 use bevy::ui::Interaction;
-use bevy_egui::{EguiContexts, egui};
+use bevy_egui::{EguiContexts, EguiContextPass, egui};
 
 use super::detail;
 
@@ -205,4 +205,18 @@ pub fn ui_system(
 pub fn cleanup(mut commands: Commands, list_data: Res<ListData>) {
     println!("list cleanup");
     commands.entity(list_data.button_entity).despawn();
+}
+
+pub struct ListPlugin;
+
+impl Plugin for ListPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(AppState::List), setup)
+           .add_systems(Update, update.run_if(in_state(AppState::List)))
+           .add_systems(
+               EguiContextPass,
+               ui_system.run_if(in_state(AppState::List)),
+           )
+           .add_systems(OnExit(AppState::List), cleanup);
+    }
 }

@@ -464,7 +464,7 @@ async fn create_or_get_user(
             sqlx::query(
                 "INSERT INTO users (id, email, name, avatar_url, provider, provider_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
             )
-            .bind(&user_id)
+            .bind(user_id)
             .bind(email)
             .bind(name)
             .bind(avatar_url)

@@ -2,7 +2,7 @@ use crate::ui::components::egui_common;
 use crate::app::state::AppState;
 use crate::auth::{AuthState, ProjectsState, fetch_projects, create_project};
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, egui};
+use bevy_egui::{EguiContexts, EguiContextPass, egui};
 
 #[derive(Resource, Default)]
 pub struct ProjectsPageData {
@@ -240,4 +240,18 @@ fn format_date(date_str: &str) -> String {
 pub fn cleanup(mut commands: Commands) {
     println!("projects cleanup");
     commands.remove_resource::<ProjectsPageData>();
+}
+
+pub struct ProjectsPlugin;
+
+impl Plugin for ProjectsPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(AppState::Projects), setup)
+           .add_systems(Update, update.run_if(in_state(AppState::Projects)))
+           .add_systems(
+               EguiContextPass,
+               ui_system.run_if(in_state(AppState::Projects)),
+           )
+           .add_systems(OnExit(AppState::Projects), cleanup);
+    }
 }

@@ -23,6 +23,7 @@ pub struct ResizingHandler {
 
 impl ResizingHandler {
 
+    #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
     pub fn process(
         &mut self,
         rectangles: &mut Vec<Rectangle>,
@@ -115,6 +116,7 @@ pub struct GrabbingHandler {
 
 impl GrabbingHandler {
 
+    #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
     pub fn process(
         &mut self,
         rectangles: &mut Vec<Rectangle>,
@@ -208,6 +210,7 @@ pub struct DrawingHandler {
 
 impl DrawingHandler {
 
+    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &mut self,
         rectangles: &mut Vec<Rectangle>,

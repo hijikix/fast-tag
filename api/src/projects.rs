@@ -243,11 +243,11 @@ async fn create_project_in_db(
     sqlx::query(
         "INSERT INTO projects (id, name, description, storage_config, owner_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)"
     )
-    .bind(&project_id)
+    .bind(project_id)
     .bind(name)
     .bind(description)
     .bind(storage_config)
-    .bind(&owner_id)
+    .bind(owner_id)
     .bind(now)
     .bind(now)
     .execute(&mut *tx)
@@ -258,9 +258,9 @@ async fn create_project_in_db(
     sqlx::query(
         "INSERT INTO project_members (id, project_id, user_id, role, joined_at) VALUES ($1, $2, $3, $4, $5)"
     )
-    .bind(&member_id)
-    .bind(&project_id)
-    .bind(&owner_id)
+    .bind(member_id)
+    .bind(project_id)
+    .bind(owner_id)
     .bind("owner")
     .bind(now)
     .execute(&mut *tx)
