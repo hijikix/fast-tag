@@ -6,6 +6,11 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiContextPass, egui};
 use uuid::Uuid;
 
+#[derive(Resource, Default)]
+pub struct Parameters {
+    pub project_id: String,
+}
+
 #[derive(Component)]
 pub struct SaveProjectTask {
     pub project_id: String,
@@ -36,13 +41,20 @@ pub struct ProjectSettingsPageData {
 pub fn setup(
     mut commands: Commands,
     projects_state: Res<ProjectsState>,
+    parameters: Option<Res<Parameters>>,
 ) {
     println!("project_settings setup");
     
     let mut page_data = ProjectSettingsPageData::default();
     
-    // Initialize with first project if available
-    if let Some(project) = projects_state.projects.first() {
+    // Initialize with project from parameters if available, otherwise use first project
+    if let Some(params) = parameters {
+        if let Some(project) = projects_state.projects.iter().find(|p| p.id == params.project_id) {
+            page_data.selected_project_id = Some(project.id.clone());
+            page_data.project_name = project.name.clone();
+            page_data.project_description = project.description.clone().unwrap_or_default();
+        }
+    } else if let Some(project) = projects_state.projects.first() {
         page_data.selected_project_id = Some(project.id.clone());
         page_data.project_name = project.name.clone();
         page_data.project_description = project.description.clone().unwrap_or_default();
@@ -85,30 +97,6 @@ pub fn ui_system(
             });
             return;
         }
-
-        ui.horizontal(|ui| {
-            ui.label("Select Project:");
-            egui::ComboBox::from_label("")
-                .selected_text(
-                    projects_state.projects
-                        .iter()
-                        .find(|p| Some(&p.id) == page_data.selected_project_id.as_ref())
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("Select a project")
-                )
-                .show_ui(ui, |ui| {
-                    for project in &projects_state.projects {
-                        let is_selected = Some(&project.id) == page_data.selected_project_id.as_ref();
-                        if ui.selectable_label(is_selected, &project.name).clicked() {
-                            page_data.selected_project_id = Some(project.id.clone());
-                            page_data.project_name = project.name.clone();
-                            page_data.project_description = project.description.clone().unwrap_or_default();
-                            page_data.is_editing = false;
-                            page_data.save_error = None;
-                        }
-                    }
-                });
-        });
 
         ui.separator();
 

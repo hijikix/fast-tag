@@ -28,10 +28,10 @@ pub fn ui_top_panel(
             }
 
             if ui
-                .selectable_label(*current_state == AppState::List, "✨ List")
+                .selectable_label(*current_state == AppState::Tasks, "✨ Tasks")
                 .clicked()
             {
-                next_state.set(AppState::List)
+                next_state.set(AppState::Tasks)
             }
 
             if ui
