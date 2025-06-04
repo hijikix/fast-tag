@@ -6,7 +6,7 @@ mod core;
 mod io;
 mod auth;
 mod sync;
-use bevy_egui::EguiPlugin;
+use bevy_egui::{EguiPlugin, EguiContexts, egui};
 use app::state::AppState;
 use auth::{AuthState, UserState, ProjectsState};
 
@@ -43,10 +43,33 @@ fn main() {
         .add_plugins(ProjectsPlugin)
         .add_plugins(ProjectSettingsPlugin)
         .add_plugins(DetailPlugin)
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, setup_fonts))
         .run();
 }
 
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
+}
+
+fn setup_fonts(mut contexts: EguiContexts) {
+    let mut fonts = egui::FontDefinitions::default();
+    
+    fonts.font_data.insert(
+        "noto_sans_jp".to_owned(),
+        egui::FontData::from_static(include_bytes!("../fonts/NotoSansJP-Regular.ttf")).into(),
+    );
+    
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "noto_sans_jp".to_owned());
+    
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push("noto_sans_jp".to_owned());
+    
+    contexts.ctx_mut().set_fonts(fonts);
 }
