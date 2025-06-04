@@ -46,6 +46,7 @@ pub fn update() {
 }
 
 pub fn ui_system(
+    mut commands: Commands,
     mut contexts: EguiContexts,
     current_state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
@@ -128,13 +129,21 @@ pub fn ui_system(
                             
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("Open").clicked() {
-                                    // TODO: Navigate to project detail/annotations
                                     println!("Opening project: {}", project.name);
+                                    // Set project ID parameter for Tasks page
+                                    commands.insert_resource(crate::pages::tasks::Parameters {
+                                        project_id: project.id.clone(),
+                                    });
+                                    next_state.set(AppState::Tasks);
                                 }
                                 
                                 if ui.button("🔧 Settings").clicked() {
                                     // Navigate to project settings page
                                     println!("Opening settings for project: {}", project.name);
+                                    // Set project ID parameter for ProjectSettings page
+                                    commands.insert_resource(crate::pages::project_settings::Parameters {
+                                        project_id: project.id.clone(),
+                                    });
                                     next_state.set(AppState::ProjectSettings);
                                 }
                             });

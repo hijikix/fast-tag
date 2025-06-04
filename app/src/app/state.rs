@@ -4,7 +4,7 @@ use bevy::prelude::*;
 pub enum AppState {
     #[default]
     Login,
-    List,
+    Tasks,
     Projects,
     ProjectSettings,
     Detail,

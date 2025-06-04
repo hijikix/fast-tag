@@ -12,7 +12,7 @@ use auth::{AuthState, UserState, ProjectsState};
 
 mod pages {
     pub mod detail;
-    pub mod list;
+    pub mod tasks;
     pub mod login;
     pub mod projects;
     pub mod project_settings;
@@ -20,7 +20,7 @@ mod pages {
 
 use pages::{
     detail::DetailPlugin,
-    list::ListPlugin,
+    tasks::TasksPlugin,
     login::LoginPlugin,
     projects::ProjectsPlugin,
     project_settings::ProjectSettingsPlugin,
@@ -39,7 +39,7 @@ fn main() {
         .init_resource::<ProjectsState>()
         .add_plugins(sync::SyncPlugin)
         .add_plugins(LoginPlugin)
-        .add_plugins(ListPlugin)
+        .add_plugins(TasksPlugin)
         .add_plugins(ProjectsPlugin)
         .add_plugins(ProjectSettingsPlugin)
         .add_plugins(DetailPlugin)
