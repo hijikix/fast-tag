@@ -1,4 +1,5 @@
 use crate::app::state::AppState;
+use crate::auth::{AuthState, fetch_task_by_id, fetch_storage_url};
 use crate::core::camera_controls::CameraController;
 use crate::core::commands::{Command, CommandHistory};
 use crate::core::interactions::{
@@ -17,6 +18,8 @@ use bevy_egui::{EguiContexts, EguiContextPass};
 #[derive(Resource, Default)]
 pub struct Parameters {
     pub url: String,
+    pub task_id: Option<String>,
+    pub project_id: Option<String>,
 }
 
 #[derive(Resource)]
@@ -51,22 +54,96 @@ pub struct SelectedRect;
 
 pub fn setup(
     mut commands: Commands,
-    params: Res<Parameters>,
+    mut params: ResMut<Parameters>,
+    auth_state: Res<AuthState>,
     mut images: ResMut<Assets<Image>>,
     mut config_store: ResMut<GizmoConfigStore>,
 ) {
     println!("detail setup");
 
+    // If we have task_id and project_id, fetch the task and use its resource_url
+    if let (Some(task_id), Some(project_id)) = (&params.task_id, &params.project_id) {
+        if let Some(jwt) = auth_state.get_jwt() {
+            println!("Fetching task: {} from project: {}", task_id, project_id);
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(fetch_task_by_id(jwt, project_id, task_id)) {
+                Ok(task) => {
+                    if let Some(resource_url) = task.resource_url {
+                        println!("Setting image URL from task: {}", resource_url);
+                        // Convert storage:// URL to actual authenticated URL
+                        if resource_url.starts_with("storage://") {
+                            let storage_key = resource_url.strip_prefix("storage://").unwrap();
+                            match rt.block_on(fetch_storage_url(jwt, project_id, storage_key)) {
+                                Ok(authenticated_url) => {
+                                    params.url = authenticated_url;
+                                    println!("Got authenticated URL: {}", params.url);
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to fetch authenticated URL: {}", e);
+                                    // Continue with empty URL
+                                }
+                            }
+                        } else {
+                            params.url = resource_url;
+                        }
+                    } else {
+                        eprintln!("Task has no resource URL");
+                        // Don't return early, continue with empty URL to initialize DetailData
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to fetch task: {}", e);
+                    // Don't return early, continue with empty URL to initialize DetailData
+                }
+            }
+        } else {
+            eprintln!("Not authenticated");
+            // Don't return early, continue with empty URL to initialize DetailData
+        }
+    }
+
     // load image
     println!("url {:?}", params.url);
-    let image_entity =
-        match image_loader::spawn_image_sprite(&mut commands, &mut images, &params.url) {
-            Ok(entity) => entity,
+    if let Some(task_id) = &params.task_id {
+        println!("task_id {:?}", task_id);
+    }
+    
+    // Try to load image, but create a placeholder entity if it fails
+    let image_entity = if !params.url.is_empty() {
+        // S3 URLs from our storage API are pre-signed and don't need bearer token auth
+        // Only direct API storage URLs need bearer token authentication
+        let needs_auth = params.url.contains("/storage/") && !params.url.contains("s3.amazonaws.com");
+        let load_result = if needs_auth {
+            if let Some(jwt) = auth_state.get_jwt() {
+                image_loader::spawn_image_sprite_with_auth(&mut commands, &mut images, &params.url, jwt)
+            } else {
+                Err(image::ImageError::Unsupported(
+                    image::error::UnsupportedError::from_format_and_kind(
+                        image::error::ImageFormatHint::Unknown,
+                        image::error::UnsupportedErrorKind::Format(image::error::ImageFormatHint::Unknown),
+                    ),
+                ))
+            }
+        } else {
+            image_loader::spawn_image_sprite(&mut commands, &mut images, &params.url)
+        };
+
+        match load_result {
+            Ok(entity) => {
+                println!("Image loaded successfully");
+                entity
+            }
             Err(e) => {
                 eprintln!("load_image error: {}", e);
-                return;
+                // Create a placeholder entity
+                commands.spawn(Sprite::default()).id()
             }
-        };
+        }
+    } else {
+        println!("No URL provided, creating placeholder");
+        // Create a placeholder entity
+        commands.spawn(Sprite::default()).id()
+    };
 
     // gizmo config
     let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();

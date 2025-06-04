@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::env;
 
 #[derive(Resource, Default)]
 pub struct AuthState {
@@ -81,11 +82,16 @@ impl UserState {
     }
 }
 
+fn get_api_base_url() -> String {
+    env::var("API_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string())
+}
+
 #[allow(dead_code)]
 pub async fn fetch_user_info(jwt: &str) -> Result<User, String> {
+    let base_url = get_api_base_url();
     let client = reqwest::Client::new();
     let response = client
-        .get("http://localhost:8080/me")
+        .get(format!("{}/me", base_url))
         .bearer_auth(jwt)
         .send()
         .await
@@ -174,9 +180,10 @@ impl ProjectsState {
 }
 
 pub async fn fetch_projects(jwt: &str) -> Result<Vec<Project>, String> {
+    let base_url = get_api_base_url();
     let client = reqwest::Client::new();
     let response = client
-        .get("http://localhost:8080/projects")
+        .get(format!("{}/projects", base_url))
         .bearer_auth(jwt)
         .send()
         .await
@@ -194,6 +201,7 @@ pub async fn fetch_projects(jwt: &str) -> Result<Vec<Project>, String> {
 }
 
 pub async fn create_project(jwt: &str, name: &str, description: Option<&str>) -> Result<Project, String> {
+    let base_url = get_api_base_url();
     let client = reqwest::Client::new();
     let request_body = CreateProjectRequest {
         name: name.to_string(),
@@ -201,7 +209,7 @@ pub async fn create_project(jwt: &str, name: &str, description: Option<&str>) ->
     };
     
     let response = client
-        .post("http://localhost:8080/projects")
+        .post(format!("{}/projects", base_url))
         .bearer_auth(jwt)
         .json(&request_body)
         .send()
@@ -220,6 +228,7 @@ pub async fn create_project(jwt: &str, name: &str, description: Option<&str>) ->
 }
 
 pub async fn update_project(jwt: &str, project_id: &str, name: &str, description: Option<&str>) -> Result<Project, String> {
+    let base_url = get_api_base_url();
     let client = reqwest::Client::new();
     let request_body = UpdateProjectRequest {
         name: name.to_string(),
@@ -227,7 +236,7 @@ pub async fn update_project(jwt: &str, project_id: &str, name: &str, description
     };
     
     let response = client
-        .put(format!("http://localhost:8080/projects/{}", project_id))
+        .put(format!("{}/projects/{}", base_url, project_id))
         .bearer_auth(jwt)
         .json(&request_body)
         .send()
@@ -246,11 +255,38 @@ pub async fn update_project(jwt: &str, project_id: &str, name: &str, description
     }
 }
 
+pub async fn fetch_storage_url(jwt: &str, project_id: &str, storage_key: &str) -> Result<String, String> {
+    let base_url = get_api_base_url();
+    let client = reqwest::Client::new();
+    
+    // URL encode the storage key to handle special characters like Japanese text
+    let encoded_storage_key = urlencoding::encode(storage_key);
+    
+    let response = client
+        .get(format!("{}/projects/{}/storage/{}/url", base_url, project_id, encoded_storage_key))
+        .bearer_auth(jwt)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if response.status().is_success() {
+        let url_response: StorageUrlResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+        Ok(url_response.download_url)
+    } else {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        Err(format!("API error: {}", error_text))
+    }
+}
+
 pub async fn delete_project(jwt: &str, project_id: &str) -> Result<(), String> {
+    let base_url = get_api_base_url();
     let client = reqwest::Client::new();
     
     let response = client
-        .delete(format!("http://localhost:8080/projects/{}", project_id))
+        .delete(format!("{}/projects/{}", base_url, project_id))
         .bearer_auth(jwt)
         .send()
         .await
@@ -304,11 +340,17 @@ pub struct TaskResponse {
     pub task: Task,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct StorageUrlResponse {
+    pub download_url: String,
+}
+
 
 pub async fn fetch_tasks(jwt: &str, project_id: &str) -> Result<Vec<Task>, String> {
+    let base_url = get_api_base_url();
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("http://localhost:8080/projects/{}/tasks", project_id))
+        .get(format!("{}/projects/{}/tasks", base_url, project_id))
         .bearer_auth(jwt)
         .send()
         .await
@@ -325,8 +367,31 @@ pub async fn fetch_tasks(jwt: &str, project_id: &str) -> Result<Vec<Task>, Strin
     }
 }
 
+pub async fn fetch_task_by_id(jwt: &str, project_id: &str, task_id: &str) -> Result<Task, String> {
+    let base_url = get_api_base_url();
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/projects/{}/tasks/{}", base_url, project_id, task_id))
+        .bearer_auth(jwt)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if response.status().is_success() {
+        let task_response: TaskResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+        Ok(task_response.task)
+    } else {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        Err(format!("API error: {}", error_text))
+    }
+}
+
 #[allow(dead_code)]
 pub async fn create_task(jwt: &str, project_id: &str, name: &str, resource_url: Option<&str>) -> Result<Task, String> {
+    let base_url = get_api_base_url();
     let client = reqwest::Client::new();
     let request_body = CreateTaskRequest {
         name: name.to_string(),
@@ -334,7 +399,7 @@ pub async fn create_task(jwt: &str, project_id: &str, name: &str, resource_url: 
     };
     
     let response = client
-        .post(format!("http://localhost:8080/projects/{}/tasks", project_id))
+        .post(format!("{}/projects/{}/tasks", base_url, project_id))
         .bearer_auth(jwt)
         .json(&request_body)
         .send()

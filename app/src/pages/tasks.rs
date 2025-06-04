@@ -196,10 +196,12 @@ pub fn ui_system(
                             
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.button("Open").clicked() && task.resource_url.is_some() {
-                                    println!("Opening task: {}", task.name);
-                                    // Set task resource URL parameter for Detail page
+                                    println!("Opening task: {} (ID: {})", task.name, task.id);
+                                    // Set task parameters for Detail page
                                     commands.insert_resource(detail::Parameters {
-                                        url: task.resource_url.clone().unwrap_or_default(),
+                                        url: String::new(), // Will be fetched from task
+                                        task_id: Some(task.id.clone()),
+                                        project_id: parameters.as_ref().map(|p| p.project_id.clone()),
                                     });
                                     next_state.set(AppState::Detail);
                                 }
