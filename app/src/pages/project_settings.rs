@@ -1,8 +1,10 @@
 use crate::ui::components::egui_common;
 use crate::app::state::AppState;
 use crate::auth::{AuthState, ProjectsState};
+use crate::sync::{SyncState, SyncRequestEvent, SyncRequest, SyncCompletedEvent, SyncErrorEvent};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+use uuid::Uuid;
 
 #[derive(Component)]
 pub struct SaveProjectTask {
@@ -27,6 +29,8 @@ pub struct ProjectSettingsPageData {
     pub is_deleting: bool,
     pub delete_error: Option<String>,
     pub show_delete_confirmation: bool,
+    pub sync_status_message: Option<String>,
+    pub sync_error_message: Option<String>,
 }
 
 pub fn setup(
@@ -58,7 +62,9 @@ pub fn ui_system(
     mut next_state: ResMut<NextState<AppState>>,
     mut page_data: ResMut<ProjectSettingsPageData>,
     projects_state: Res<ProjectsState>,
-    _auth_state: Res<AuthState>,
+    auth_state: Res<AuthState>,
+    sync_state: Res<SyncState>,
+    mut sync_request_events: EventWriter<SyncRequestEvent>,
 ) {
     egui_common::ui_top_panel(&mut contexts, current_state, &mut next_state);
 
@@ -190,6 +196,67 @@ pub fn ui_system(
                         if let Some(error) = &page_data.save_error {
                             ui.add_space(10.0);
                             ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+                        }
+                    });
+                });
+                
+                ui.add_space(20.0);
+                
+                // Storage Sync section
+                ui.group(|ui| {
+                    ui.vertical(|ui| {
+                        ui.strong("Storage Sync");
+                        ui.separator();
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Sync files from storage to create annotation tasks.");
+                        });
+                        
+                        ui.add_space(10.0);
+                        
+                        ui.horizontal(|ui| {
+                            let is_syncing = sync_state.is_syncing;
+                            
+                            if ui.add_enabled(!is_syncing, egui::Button::new("🔄 Start Sync")).clicked() {
+                                if let Ok(project_uuid) = Uuid::parse_str(&project_id) {
+                                    if let Some(jwt) = auth_state.get_jwt() {
+                                        sync_request_events.write(SyncRequestEvent {
+                                            project_id: project_uuid,
+                                            request: SyncRequest {
+                                                prefix: None,
+                                                file_extensions: Some(vec!["jpg".to_string(), "jpeg".to_string(), "png".to_string()]),
+                                                overwrite_existing: Some(false),
+                                            },
+                                            token: jwt.clone(),
+                                        });
+                                    }
+                                    page_data.sync_status_message = Some("Starting sync...".to_string());
+                                    page_data.sync_error_message = None;
+                                }
+                            }
+                            
+                            if is_syncing {
+                                ui.add(egui::Spinner::new());
+                                ui.label("Syncing...");
+                                
+                                if let Some(progress) = &sync_state.progress {
+                                    ui.label(format!(
+                                        "Progress: {} / {} files",
+                                        progress.processed_files,
+                                        progress.total_files
+                                    ));
+                                }
+                            }
+                        });
+                        
+                        if let Some(msg) = &page_data.sync_status_message {
+                            ui.add_space(5.0);
+                            ui.colored_label(egui::Color32::GREEN, msg);
+                        }
+                        
+                        if let Some(err) = &page_data.sync_error_message {
+                            ui.add_space(5.0);
+                            ui.colored_label(egui::Color32::RED, err);
                         }
                     });
                 });
@@ -339,6 +406,34 @@ pub fn handle_save_project_task(
             page_data.is_saving = false;
         }
         commands.entity(entity).despawn();
+    }
+}
+
+pub fn handle_sync_events(
+    mut page_data: ResMut<ProjectSettingsPageData>,
+    mut sync_completed_events: EventReader<SyncCompletedEvent>,
+    mut sync_error_events: EventReader<SyncErrorEvent>,
+) {
+    for event in sync_completed_events.read() {
+        page_data.sync_status_message = Some(format!(
+            "Sync completed! Created {} tasks, skipped {} tasks.",
+            event.response.tasks_created,
+            event.response.tasks_skipped
+        ));
+        page_data.sync_error_message = None;
+        
+        if !event.response.errors.is_empty() {
+            page_data.sync_error_message = Some(format!(
+                "Completed with {} errors: {}",
+                event.response.errors.len(),
+                event.response.errors.join(", ")
+            ));
+        }
+    }
+    
+    for event in sync_error_events.read() {
+        page_data.sync_error_message = Some(format!("Sync failed: {}", event.error));
+        page_data.sync_status_message = None;
     }
 }
 
