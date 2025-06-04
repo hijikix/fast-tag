@@ -5,6 +5,7 @@ mod ui;
 mod core;
 mod io;
 mod auth;
+mod sync;
 use bevy_egui::{EguiContextPass, EguiPlugin};
 use app::state::AppState;
 use auth::{AuthState, UserState, ProjectsState};
@@ -36,6 +37,7 @@ fn main() {
         .init_resource::<AuthState>()
         .init_resource::<UserState>()
         .init_resource::<ProjectsState>()
+        .add_plugins(sync::SyncPlugin)
         .add_systems(Startup, setup)
         // login page
         .add_systems(OnEnter(AppState::Login), login::setup)
@@ -67,6 +69,7 @@ fn main() {
             project_settings::update,
             project_settings::handle_save_project_task,
             project_settings::handle_delete_project_task,
+            project_settings::handle_sync_events,
         ).run_if(in_state(AppState::ProjectSettings)))
         .add_systems(
             EguiContextPass,
