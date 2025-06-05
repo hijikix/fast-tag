@@ -107,6 +107,7 @@ pub fn update(
 }
 
 
+#[allow(clippy::too_many_arguments)]
 pub fn ui_system(
     mut commands: Commands,
     mut contexts: EguiContexts,

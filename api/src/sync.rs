@@ -7,6 +7,9 @@ use chrono::{DateTime, Utc};
 use crate::auth::{JwtManager, Claims};
 use crate::storage::factory::create_storage_provider_from_project;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug, Deserialize)]
 pub struct SyncRequest {
     pub prefix: Option<String>,

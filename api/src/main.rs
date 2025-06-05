@@ -7,6 +7,9 @@ mod tasks;
 mod storage;
 mod sync;
 
+#[cfg(test)]
+mod test_utils;
+
 async fn health_check(pool: web::Data<Pool<Postgres>>) -> impl Responder {
     match sqlx::query("SELECT 1").fetch_one(pool.get_ref()).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({
@@ -105,4 +108,85 @@ async fn main() -> std::io::Result<()> {
     .bind("127.0.0.1:8080")?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{test, App};
+    use sqlx::postgres::PgPoolOptions;
+    use serial_test::serial;
+
+
+    #[tokio::test]
+    #[serial]
+    async fn test_health_check_success() {
+        let pool = test_utils::setup_test_db().await;
+        
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .route("/health", web::get().to(health_check))
+        ).await;
+        
+        let req = test::TestRequest::get()
+            .uri("/health")
+            .to_request();
+            
+        let resp = test::call_service(&app, req).await;
+        
+        assert!(resp.status().is_success());
+        
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["service"], "fast-tag-api");
+        assert_eq!(body["database"], "connected");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_health_check_db_failure() {
+        dotenvy::from_filename("api/.env.test").ok();
+        
+        // Create a pool that will fail when queried
+        let pool = match PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_millis(100))
+            .connect("postgresql://invalid:invalid@localhost:5432/nonexistent")
+            .await
+        {
+            Ok(p) => p,
+            Err(_) => {
+                // Create a pool with one connection to simulate failure
+                PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect("postgresql://fast_tag_test_user:fast_tag_test_password@localhost:5432/fast_tag_test")
+                    .await
+                    .expect("Failed to create dummy pool")
+            }
+        };
+        
+        // Close the pool to ensure queries fail
+        pool.close().await;
+        
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool))
+                .route("/health", web::get().to(health_check))
+        ).await;
+        
+        let req = test::TestRequest::get()
+            .uri("/health")
+            .to_request();
+            
+        let resp = test::call_service(&app, req).await;
+        
+        assert_eq!(resp.status(), 503);
+        
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["status"], "error");
+        assert_eq!(body["service"], "fast-tag-api");
+        assert_eq!(body["database"], "disconnected");
+    }
+
 }
