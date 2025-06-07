@@ -1,2 +1,3 @@
 /target
 .env
+.jwt_token

@@ -5,6 +5,7 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use crate::auth::{JwtManager, Claims};
+use crate::storage::factory::create_storage_provider_from_project;
 
 #[cfg(test)]
 mod tests;
@@ -37,11 +38,19 @@ pub struct UpdateTaskRequest {
 #[derive(Debug, Serialize)]
 pub struct TaskResponse {
     pub task: Task,
+    pub resolved_resource_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskWithResolvedUrl {
+    #[serde(flatten)]
+    pub task: Task,
+    pub resolved_resource_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct TasksListResponse {
-    pub tasks: Vec<Task>,
+    pub tasks: Vec<TaskWithResolvedUrl>,
 }
 
 pub async fn create_task(
@@ -83,7 +92,17 @@ pub async fn create_task(
 
     // Create task
     match create_task_in_db(&pool, project_id, &payload.name, payload.resource_url.as_deref()).await {
-        Ok(task) => HttpResponse::Created().json(TaskResponse { task }),
+        Ok(task) => {
+            let resolved_url = if let Some(ref url) = task.resource_url {
+                resolve_storage_url(&pool, project_id, url).await
+            } else {
+                None
+            };
+            HttpResponse::Created().json(TaskResponse { 
+                task,
+                resolved_resource_url: resolved_url,
+            })
+        },
         Err(_) => HttpResponse::InternalServerError().json("Failed to create task"),
     }
 }
@@ -117,7 +136,21 @@ pub async fn list_tasks(
 
     // Get project tasks
     match get_project_tasks(&pool, project_id).await {
-        Ok(tasks) => HttpResponse::Ok().json(TasksListResponse { tasks }),
+        Ok(tasks) => {
+            let mut tasks_with_urls = Vec::new();
+            for task in tasks {
+                let resolved_url = if let Some(ref url) = task.resource_url {
+                    resolve_storage_url(&pool, project_id, url).await
+                } else {
+                    None
+                };
+                tasks_with_urls.push(TaskWithResolvedUrl {
+                    task,
+                    resolved_resource_url: resolved_url,
+                });
+            }
+            HttpResponse::Ok().json(TasksListResponse { tasks: tasks_with_urls })
+        },
         Err(_) => HttpResponse::InternalServerError().json("Failed to fetch tasks"),
     }
 }
@@ -157,7 +190,17 @@ pub async fn get_task(
 
     // Get task
     match get_task_by_id(&pool, task_id, project_id).await {
-        Ok(Some(task)) => HttpResponse::Ok().json(TaskResponse { task }),
+        Ok(Some(task)) => {
+            let resolved_url = if let Some(ref url) = task.resource_url {
+                resolve_storage_url(&pool, project_id, url).await
+            } else {
+                None
+            };
+            HttpResponse::Ok().json(TaskResponse { 
+                task,
+                resolved_resource_url: resolved_url,
+            })
+        },
         Ok(None) => HttpResponse::NotFound().json("Task not found"),
         Err(_) => HttpResponse::InternalServerError().json("Failed to fetch task"),
     }
@@ -213,7 +256,17 @@ pub async fn update_task(
 
     // Update task
     match update_task_in_db(&pool, task_id, project_id, &payload.name, payload.resource_url.as_deref(), &payload.status).await {
-        Ok(Some(task)) => HttpResponse::Ok().json(TaskResponse { task }),
+        Ok(Some(task)) => {
+            let resolved_url = if let Some(ref url) = task.resource_url {
+                resolve_storage_url(&pool, project_id, url).await
+            } else {
+                None
+            };
+            HttpResponse::Ok().json(TaskResponse { 
+                task,
+                resolved_resource_url: resolved_url,
+            })
+        },
         Ok(None) => HttpResponse::NotFound().json("Task not found"),
         Err(_) => HttpResponse::InternalServerError().json("Failed to update task"),
     }
@@ -393,4 +446,47 @@ fn extract_user_claims(
         Ok(claims) => Ok(claims),
         Err(_) => Err(HttpResponse::Unauthorized().json("Invalid or expired token")),
     }
+}
+
+async fn resolve_storage_url(
+    pool: &Pool<Postgres>,
+    project_id: Uuid,
+    storage_url: &str,
+) -> Option<String> {
+    // Only process storage:// URLs
+    if !storage_url.starts_with("storage://") {
+        return Some(storage_url.to_string());
+    }
+    
+    let key = &storage_url[10..]; // Remove "storage://" prefix
+    
+    // Get project to access storage configuration
+    let project = match get_project_by_id(pool, project_id).await {
+        Ok(Some(project)) => project,
+        _ => return None,
+    };
+    
+    // Create storage provider
+    let storage_provider = match create_storage_provider_from_project(&project).await {
+        Ok(provider) => provider,
+        _ => return None,
+    };
+    
+    // Generate presigned URL with 1 hour expiry
+    match storage_provider.get_presigned_url(key, 3600).await {
+        Ok(url) => Some(url),
+        Err(_) => None,
+    }
+}
+
+async fn get_project_by_id(
+    pool: &Pool<Postgres>,
+    project_id: Uuid,
+) -> Result<Option<crate::projects::Project>, sqlx::Error> {
+    sqlx::query_as::<_, crate::projects::Project>(
+        "SELECT id, name, description, storage_config, owner_id, created_at, updated_at FROM projects WHERE id = $1"
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
 }
