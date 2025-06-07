@@ -1,17 +1,19 @@
 use crate::storage::{StorageProvider, StorageError, StorageMetadata};
 use async_trait::async_trait;
 use rusoto_core::{Region, RusotoError};
-use rusoto_credential::StaticProvider;
+use rusoto_credential::{StaticProvider, ProvideAwsCredentials};
 use rusoto_s3::{
     S3Client, S3, PutObjectRequest, GetObjectRequest, DeleteObjectRequest, 
     HeadObjectRequest, ListObjectsV2Request, GetObjectError, HeadObjectError,
+    util::{PreSignedRequest, PreSignedRequestOption},
 };
 use std::str::FromStr;
 
 pub struct S3StorageProvider {
     client: S3Client,
     bucket: String,
-    _region: Region,
+    region: Region,
+    credentials: StaticProvider,
 }
 
 impl S3StorageProvider {
@@ -37,11 +39,11 @@ impl S3StorageProvider {
         let client = S3Client::new_with(
             rusoto_core::request::HttpClient::new()
                 .map_err(|e| StorageError::ConfigurationError(e.to_string()))?,
-            credentials_provider,
+            credentials_provider.clone(),
             region.clone(),
         );
 
-        Ok(Self { client, bucket, _region: region })
+        Ok(Self { client, bucket, region: region.clone(), credentials: credentials_provider })
     }
 }
 
@@ -101,17 +103,63 @@ impl StorageProvider for S3StorageProvider {
     async fn get_presigned_url(
         &self,
         key: &str,
-        _expires_in_secs: u64,
+        expires_in_secs: u64,
     ) -> Result<String, StorageError> {
-        let _request = GetObjectRequest {
+        // Check if file exists first
+        if !self.exists(key).await? {
+            return Err(StorageError::NotFound);
+        }
+
+        let request = GetObjectRequest {
             bucket: self.bucket.clone(),
             key: key.to_string(),
             ..Default::default()
         };
 
-        // For simplicity, return a basic S3 URL
-        // In production, implement proper presigned URL generation
-        Ok(format!("https://{}.s3.amazonaws.com/{}", self.bucket, key))
+        // Generate presigned URL using rusoto_s3
+        let credentials = match self.credentials.credentials().await {
+            Ok(creds) => creds,
+            Err(e) => {
+                eprintln!("Failed to get credentials: {}", e);
+                return Err(StorageError::NetworkError(format!("Failed to get credentials: {}", e)));
+            }
+        };
+
+        let options = PreSignedRequestOption {
+            expires_in: std::time::Duration::from_secs(expires_in_secs),
+        };
+
+        // Generate presigned URL with the correct region/endpoint
+        let mut presigned_url = request.get_presigned_url(&self.region, &credentials, &options);
+        
+        eprintln!("Generated presigned URL: {}", presigned_url);
+        eprintln!("Region: {:?}", self.region);
+        
+        // For custom endpoints (like MinIO), we need to replace the host in the URL
+        if let Region::Custom { endpoint, .. } = &self.region {
+            // Parse the generated URL and replace the host with our custom endpoint
+            if let Ok(mut url) = url::Url::parse(&presigned_url) {
+                if let Ok(custom_url) = url::Url::parse(endpoint) {
+                    if let Err(e) = url.set_host(custom_url.host_str()) {
+                        eprintln!("Failed to set host: {:?}", e);
+                        return Err(StorageError::ConfigurationError(format!("Failed to set host: {:?}", e)));
+                    }
+                    if let Some(port) = custom_url.port() {
+                        if let Err(e) = url.set_port(Some(port)) {
+                            eprintln!("Failed to set port: {:?}", e);
+                            return Err(StorageError::ConfigurationError(format!("Failed to set port: {:?}", e)));
+                        }
+                    }
+                    if let Err(e) = url.set_scheme(custom_url.scheme()) {
+                        eprintln!("Failed to set scheme: {:?}", e);
+                        return Err(StorageError::ConfigurationError(format!("Failed to set scheme: {:?}", e)));
+                    }
+                    presigned_url = url.to_string();
+                }
+            }
+        }
+        
+        Ok(presigned_url)
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {

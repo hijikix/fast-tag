@@ -80,7 +80,19 @@ impl StorageProvider for LocalStorageProvider {
             return Err(StorageError::NotFound);
         }
 
-        Ok(format!("file://{}", file_path.display()))
+        // For local storage, return a file:// URL
+        let absolute_path = file_path.canonicalize()
+            .map_err(|e| StorageError::NetworkError(format!("Failed to get absolute path: {}", e)))?;
+        
+        // Convert to file:// URL format
+        let path_str = absolute_path.to_string_lossy();
+        let file_url = if cfg!(windows) {
+            format!("file:///{}", path_str.replace("\\", "/"))
+        } else {
+            format!("file://{}", path_str)
+        };
+        
+        Ok(file_url)
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
