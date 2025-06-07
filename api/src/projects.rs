@@ -26,14 +26,14 @@ pub struct ProjectMember {
     pub joined_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
     pub description: Option<String>,
     pub storage_config: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateProjectRequest {
     pub name: String,
     pub description: Option<String>,
@@ -435,4 +435,341 @@ fn validate_storage_config(config: &serde_json::Value) -> Result<(), String> {
         .map_err(|e| format!("Invalid JSON format: {}", e))?;
     
     storage_config.validate()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::{User, OAuthConfig, AuthStorage, JwtManager};
+    use crate::test_utils;
+    use actix_web::{test, App, web};
+    use serial_test::serial;
+
+
+    fn create_test_oauth_config() -> OAuthConfig {
+        OAuthConfig {
+            google_client_id: "test_google_id".to_string(),
+            google_client_secret: "test_google_secret".to_string(),
+            google_redirect_url: "http://localhost/callback".to_string(),
+            github_client_id: "test_github_id".to_string(),
+            github_client_secret: "test_github_secret".to_string(),
+            github_redirect_url: "http://localhost/callback".to_string(),
+            jwt_secret: "test_jwt_secret_key_that_is_long_enough".to_string(),
+        }
+    }
+
+    fn create_auth_token(oauth_config: &OAuthConfig, user: &User) -> String {
+        let jwt_manager = JwtManager::new(&oauth_config.jwt_secret);
+        jwt_manager.generate_token(
+            &user.id.to_string(),
+            &user.email,
+            &user.name
+        ).expect("Failed to generate token")
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_create_project_success() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects", web::post().to(create_project))
+        ).await;
+
+        let create_request = CreateProjectRequest {
+            name: "Test Project".to_string(),
+            description: Some("A test project".to_string()),
+            storage_config: None,
+        };
+
+        let req = test::TestRequest::post()
+            .uri("/projects")
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .set_json(create_request)
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 201);
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["project"]["name"], "Test Project");
+        assert_eq!(body["project"]["description"], "A test project");
+        assert_eq!(body["project"]["owner_id"], user.id.to_string());
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_create_project_missing_auth() {
+        let pool = test_utils::setup_test_db().await;
+        let oauth_config = create_test_oauth_config();
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects", web::post().to(create_project))
+        ).await;
+
+        let create_request = CreateProjectRequest {
+            name: "Test Project".to_string(),
+            description: None,
+            storage_config: None,
+        };
+
+        let req = test::TestRequest::post()
+            .uri("/projects")
+            .set_json(create_request)
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_create_project_empty_name() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects", web::post().to(create_project))
+        ).await;
+
+        let create_request = CreateProjectRequest {
+            name: "".to_string(),
+            description: None,
+            storage_config: None,
+        };
+
+        let req = test::TestRequest::post()
+            .uri("/projects")
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .set_json(create_request)
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_list_projects_success() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        create_project_in_db(&pool, "Test Project 1", Some("Description 1"), None, user.id).await.unwrap();
+        create_project_in_db(&pool, "Test Project 2", Some("Description 2"), None, user.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects", web::get().to(list_projects))
+        ).await;
+
+        let req = test::TestRequest::get()
+            .uri("/projects")
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["projects"].as_array().unwrap().len(), 2);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_get_project_success() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = create_project_in_db(&pool, "Test Project", Some("Description"), None, user.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{id}", web::get().to(get_project))
+        ).await;
+
+        let req = test::TestRequest::get()
+            .uri(&format!("/projects/{}", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["project"]["id"], project.id.to_string());
+        assert_eq!(body["project"]["name"], "Test Project");
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_get_project_not_found() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{id}", web::get().to(get_project))
+        ).await;
+
+        let random_uuid = Uuid::new_v4();
+        let req = test::TestRequest::get()
+            .uri(&format!("/projects/{}", random_uuid))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_update_project_success() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = create_project_in_db(&pool, "Test Project", Some("Original Description"), None, user.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{id}", web::put().to(update_project))
+        ).await;
+
+        let update_request = UpdateProjectRequest {
+            name: "Updated Project".to_string(),
+            description: Some("Updated Description".to_string()),
+            storage_config: None,
+        };
+
+        let req = test::TestRequest::put()
+            .uri(&format!("/projects/{}", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .set_json(update_request)
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["project"]["name"], "Updated Project");
+        assert_eq!(body["project"]["description"], "Updated Description");
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_delete_project_success() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = create_project_in_db(&pool, "Test Project", Some("Description"), None, user.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{id}", web::delete().to(delete_project))
+        ).await;
+
+        let req = test::TestRequest::delete()
+            .uri(&format!("/projects/{}", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 204);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_delete_project_not_owner() {
+        let pool = test_utils::setup_test_db().await;
+        let user1 = test_utils::create_test_user_with_details(&pool).await;
+        
+        let user2_id = Uuid::new_v4();
+        let user2 = sqlx::query_as::<_, User>(
+            r#"
+            INSERT INTO users (id, email, name, avatar_url, provider, provider_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, email, name, avatar_url, provider, provider_id, created_at, updated_at
+            "#
+        )
+        .bind(user2_id)
+        .bind("test2@example.com")
+        .bind("Test User 2")
+        .bind(None::<String>)
+        .bind("google")
+        .bind("google-id-456")
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to create test user 2");
+
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user2);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = create_project_in_db(&pool, "Test Project", Some("Description"), None, user1.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{id}", web::delete().to(delete_project))
+        ).await;
+
+        let req = test::TestRequest::delete()
+            .uri(&format!("/projects/{}", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+    }
 }

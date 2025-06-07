@@ -27,3 +27,6 @@ rusoto_credential = "0.48"
 
 # For now, implement simpler versions for Azure and GCS
 # These can be expanded with proper SDKs later
+
+[dev-dependencies]
+serial_test = "3"

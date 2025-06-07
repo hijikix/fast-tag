@@ -6,6 +6,9 @@ use chrono::{DateTime, Utc};
 
 use crate::auth::{JwtManager, Claims};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Task {
     pub id: Uuid,

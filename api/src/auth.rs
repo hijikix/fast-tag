@@ -554,3 +554,203 @@ async fn get_user_by_id(pool: &Pool<Postgres>, user_id: Uuid) -> Result<Option<U
     .fetch_optional(pool)
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::{test, App, web};
+    use serial_test::serial;
+    use crate::test_utils;
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_get_user_info_success() {
+        let pool = test_utils::setup_test_db().await;
+        
+        // Create test user
+        let user_id = Uuid::new_v4();
+        let test_user = sqlx::query_as::<_, User>(
+            r#"
+            INSERT INTO users (id, email, name, avatar_url, provider, provider_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, email, name, avatar_url, provider, provider_id, created_at, updated_at
+            "#
+        )
+        .bind(&user_id)
+        .bind("test@example.com")
+        .bind("Test User")
+        .bind("https://example.com/avatar.jpg")
+        .bind("google")
+        .bind("google-id-123")
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to create test user");
+        
+        // Create OAuth config
+        let oauth_config = OAuthConfig {
+            google_client_id: "test_google_id".to_string(),
+            google_client_secret: "test_google_secret".to_string(),
+            google_redirect_url: "http://localhost/callback".to_string(),
+            github_client_id: "test_github_id".to_string(),
+            github_client_secret: "test_github_secret".to_string(),
+            github_redirect_url: "http://localhost/callback".to_string(),
+            jwt_secret: "test_jwt_secret_key_that_is_long_enough".to_string(),
+        };
+        
+        // Generate JWT token
+        let jwt_manager = JwtManager::new(&oauth_config.jwt_secret);
+        let token = jwt_manager.generate_token(
+            &test_user.id.to_string(),
+            &test_user.email,
+            &test_user.name
+        ).expect("Failed to generate token");
+        
+        // Create auth storage
+        let auth_storage = AuthStorage::new(pool.clone());
+        
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/me", web::get().to(get_user_info))
+        ).await;
+        
+        let req = test::TestRequest::get()
+            .uri("/me")
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .to_request();
+            
+        let resp = test::call_service(&app, req).await;
+        
+        assert!(resp.status().is_success());
+        
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["user"]["id"], test_user.id.to_string());
+        assert_eq!(body["user"]["email"], "test@example.com");
+        assert_eq!(body["user"]["name"], "Test User");
+        assert_eq!(body["user"]["provider"], "google");
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_get_user_info_missing_auth_header() {
+        let pool = test_utils::setup_test_db().await;
+        
+        let oauth_config = OAuthConfig {
+            google_client_id: "test_google_id".to_string(),
+            google_client_secret: "test_google_secret".to_string(),
+            google_redirect_url: "http://localhost/callback".to_string(),
+            github_client_id: "test_github_id".to_string(),
+            github_client_secret: "test_github_secret".to_string(),
+            github_redirect_url: "http://localhost/callback".to_string(),
+            jwt_secret: "test_jwt_secret_key_that_is_long_enough".to_string(),
+        };
+        
+        let auth_storage = AuthStorage::new(pool.clone());
+        
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/me", web::get().to(get_user_info))
+        ).await;
+        
+        let req = test::TestRequest::get()
+            .uri("/me")
+            .to_request();
+            
+        let resp = test::call_service(&app, req).await;
+        
+        assert_eq!(resp.status(), 401);
+        
+        let body: String = test::read_body_json(resp).await;
+        assert_eq!(body, "Authorization header missing");
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_get_user_info_invalid_token() {
+        let pool = test_utils::setup_test_db().await;
+        
+        let oauth_config = OAuthConfig {
+            google_client_id: "test_google_id".to_string(),
+            google_client_secret: "test_google_secret".to_string(),
+            google_redirect_url: "http://localhost/callback".to_string(),
+            github_client_id: "test_github_id".to_string(),
+            github_client_secret: "test_github_secret".to_string(),
+            github_redirect_url: "http://localhost/callback".to_string(),
+            jwt_secret: "test_jwt_secret_key_that_is_long_enough".to_string(),
+        };
+        
+        let auth_storage = AuthStorage::new(pool.clone());
+        
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/me", web::get().to(get_user_info))
+        ).await;
+        
+        let req = test::TestRequest::get()
+            .uri("/me")
+            .insert_header(("Authorization", "Bearer invalid_token"))
+            .to_request();
+            
+        let resp = test::call_service(&app, req).await;
+        
+        assert_eq!(resp.status(), 401);
+        
+        let body: String = test::read_body_json(resp).await;
+        assert_eq!(body, "Invalid or expired token");
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_get_user_info_user_not_found() {
+        let pool = test_utils::setup_test_db().await;
+        
+        let oauth_config = OAuthConfig {
+            google_client_id: "test_google_id".to_string(),
+            google_client_secret: "test_google_secret".to_string(),
+            google_redirect_url: "http://localhost/callback".to_string(),
+            github_client_id: "test_github_id".to_string(),
+            github_client_secret: "test_github_secret".to_string(),
+            github_redirect_url: "http://localhost/callback".to_string(),
+            jwt_secret: "test_jwt_secret_key_that_is_long_enough".to_string(),
+        };
+        
+        // Generate JWT token for non-existent user
+        let jwt_manager = JwtManager::new(&oauth_config.jwt_secret);
+        let non_existent_user_id = Uuid::new_v4();
+        let token = jwt_manager.generate_token(
+            &non_existent_user_id.to_string(),
+            "nonexistent@example.com",
+            "Non Existent User"
+        ).expect("Failed to generate token");
+        
+        let auth_storage = AuthStorage::new(pool.clone());
+        
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/me", web::get().to(get_user_info))
+        ).await;
+        
+        let req = test::TestRequest::get()
+            .uri("/me")
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .to_request();
+            
+        let resp = test::call_service(&app, req).await;
+        
+        assert_eq!(resp.status(), 404);
+        
+        let body: String = test::read_body_json(resp).await;
+        assert_eq!(body, "User not found");
+    }
+}
