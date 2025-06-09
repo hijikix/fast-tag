@@ -23,6 +23,12 @@ pub struct DeleteProjectTask {
     pub project_id: String,
 }
 
+#[derive(Component)]
+pub struct SaveStorageConfigTask {
+    pub project_id: String,
+    pub storage_config: serde_json::Value,
+}
+
 #[derive(Resource, Default)]
 pub struct ProjectSettingsPageData {
     pub selected_project_id: Option<String>,
@@ -36,6 +42,23 @@ pub struct ProjectSettingsPageData {
     pub show_delete_confirmation: bool,
     pub sync_status_message: Option<String>,
     pub sync_error_message: Option<String>,
+    // Storage configuration fields
+    pub is_editing_storage: bool,
+    pub storage_provider: String,
+    pub storage_s3_bucket: String,
+    pub storage_s3_region: String,
+    pub storage_s3_access_key: String,
+    pub storage_s3_secret_key: String,
+    pub storage_s3_endpoint: String,
+    pub storage_azure_account_name: String,
+    pub storage_azure_account_key: String,
+    pub storage_azure_container_name: String,
+    pub storage_gcs_bucket: String,
+    pub storage_gcs_project_id: String,
+    pub storage_gcs_service_account_key: String,
+    pub storage_local_base_path: String,
+    pub storage_save_error: Option<String>,
+    pub is_saving_storage: bool,
 }
 
 pub fn setup(
@@ -53,14 +76,146 @@ pub fn setup(
             page_data.selected_project_id = Some(project.id.clone());
             page_data.project_name = project.name.clone();
             page_data.project_description = project.description.clone().unwrap_or_default();
+            
+            // Initialize storage configuration from project
+            if let Some(storage_config) = &project.storage_config {
+                parse_storage_config(&mut page_data, storage_config);
+            }
         }
     } else if let Some(project) = projects_state.projects.first() {
         page_data.selected_project_id = Some(project.id.clone());
         page_data.project_name = project.name.clone();
         page_data.project_description = project.description.clone().unwrap_or_default();
+        
+        // Initialize storage configuration from project
+        if let Some(storage_config) = &project.storage_config {
+            parse_storage_config(&mut page_data, storage_config);
+        }
     }
     
     commands.insert_resource(page_data);
+}
+
+fn build_storage_config(page_data: &ProjectSettingsPageData) -> Option<serde_json::Value> {
+    use serde_json::json;
+    
+    match page_data.storage_provider.as_str() {
+        "s3" => {
+            if page_data.storage_s3_bucket.is_empty() || 
+               page_data.storage_s3_region.is_empty() || 
+               page_data.storage_s3_access_key.is_empty() || 
+               page_data.storage_s3_secret_key.is_empty() {
+                return None;
+            }
+            
+            let mut config = json!({
+                "type": "s3",
+                "bucket": page_data.storage_s3_bucket.trim(),
+                "region": page_data.storage_s3_region.trim(),
+                "access_key": page_data.storage_s3_access_key.trim(),
+                "secret_key": page_data.storage_s3_secret_key.trim(),
+            });
+            
+            if !page_data.storage_s3_endpoint.is_empty() {
+                config["endpoint"] = json!(page_data.storage_s3_endpoint.trim());
+            }
+            
+            Some(config)
+        }
+        "azure" => {
+            if page_data.storage_azure_account_name.is_empty() || 
+               page_data.storage_azure_account_key.is_empty() || 
+               page_data.storage_azure_container_name.is_empty() {
+                return None;
+            }
+            
+            Some(json!({
+                "type": "azure",
+                "account_name": page_data.storage_azure_account_name.trim(),
+                "account_key": page_data.storage_azure_account_key.trim(),
+                "container_name": page_data.storage_azure_container_name.trim(),
+            }))
+        }
+        "gcs" => {
+            if page_data.storage_gcs_bucket.is_empty() || 
+               page_data.storage_gcs_project_id.is_empty() || 
+               page_data.storage_gcs_service_account_key.is_empty() {
+                return None;
+            }
+            
+            Some(json!({
+                "type": "gcs",
+                "bucket": page_data.storage_gcs_bucket.trim(),
+                "project_id": page_data.storage_gcs_project_id.trim(),
+                "service_account_key": page_data.storage_gcs_service_account_key.trim(),
+            }))
+        }
+        "local" => {
+            if page_data.storage_local_base_path.is_empty() {
+                return None;
+            }
+            
+            Some(json!({
+                "type": "local",
+                "base_path": page_data.storage_local_base_path.trim(),
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn parse_storage_config(page_data: &mut ProjectSettingsPageData, storage_config: &serde_json::Value) {
+    if let Some(provider_type) = storage_config.get("type").and_then(|v| v.as_str()) {
+        page_data.storage_provider = provider_type.to_string();
+        
+        match provider_type {
+            "s3" => {
+                if let Some(bucket) = storage_config.get("bucket").and_then(|v| v.as_str()) {
+                    page_data.storage_s3_bucket = bucket.to_string();
+                }
+                if let Some(region) = storage_config.get("region").and_then(|v| v.as_str()) {
+                    page_data.storage_s3_region = region.to_string();
+                }
+                if let Some(access_key) = storage_config.get("access_key").and_then(|v| v.as_str()) {
+                    page_data.storage_s3_access_key = access_key.to_string();
+                }
+                if let Some(secret_key) = storage_config.get("secret_key").and_then(|v| v.as_str()) {
+                    page_data.storage_s3_secret_key = secret_key.to_string();
+                }
+                if let Some(endpoint) = storage_config.get("endpoint").and_then(|v| v.as_str()) {
+                    page_data.storage_s3_endpoint = endpoint.to_string();
+                }
+            }
+            "azure" => {
+                if let Some(account_name) = storage_config.get("account_name").and_then(|v| v.as_str()) {
+                    page_data.storage_azure_account_name = account_name.to_string();
+                }
+                if let Some(account_key) = storage_config.get("account_key").and_then(|v| v.as_str()) {
+                    page_data.storage_azure_account_key = account_key.to_string();
+                }
+                if let Some(container_name) = storage_config.get("container_name").and_then(|v| v.as_str()) {
+                    page_data.storage_azure_container_name = container_name.to_string();
+                }
+            }
+            "gcs" => {
+                if let Some(bucket) = storage_config.get("bucket").and_then(|v| v.as_str()) {
+                    page_data.storage_gcs_bucket = bucket.to_string();
+                }
+                if let Some(project_id) = storage_config.get("project_id").and_then(|v| v.as_str()) {
+                    page_data.storage_gcs_project_id = project_id.to_string();
+                }
+                if let Some(service_account_key) = storage_config.get("service_account_key").and_then(|v| v.as_str()) {
+                    page_data.storage_gcs_service_account_key = service_account_key.to_string();
+                }
+            }
+            "local" => {
+                if let Some(base_path) = storage_config.get("base_path").and_then(|v| v.as_str()) {
+                    page_data.storage_local_base_path = base_path.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn update() {
@@ -244,6 +399,235 @@ pub fn ui_system(
                         if let Some(err) = &page_data.sync_error_message {
                             ui.add_space(5.0);
                             ui.colored_label(egui::Color32::RED, err);
+                        }
+                    });
+                });
+                
+                ui.add_space(20.0);
+                
+                // Storage Configuration section
+                ui.group(|ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong("Storage Configuration");
+                            
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if page_data.is_editing_storage {
+                                    let can_save = !page_data.is_saving_storage;
+                                    
+                                    if ui.add_enabled(can_save, egui::Button::new("💾 Save")).clicked() {
+                                        if let Some(storage_config) = build_storage_config(&page_data) {
+                                            page_data.is_saving_storage = true;
+                                            page_data.storage_save_error = None;
+                                            
+                                            // Spawn task to save storage config
+                                            commands.spawn(SaveStorageConfigTask {
+                                                project_id: project_id.clone(),
+                                                storage_config,
+                                            });
+                                        } else {
+                                            page_data.storage_save_error = Some("Invalid storage configuration".to_string());
+                                        }
+                                    }
+                                    
+                                    if ui.button("❌ Cancel").clicked() {
+                                        // Reset fields from project's current storage config
+                                        if let Some(storage_config) = &project.storage_config {
+                                            parse_storage_config(&mut page_data, storage_config);
+                                        } else {
+                                            // Clear all fields if no config exists
+                                            page_data.storage_provider = String::new();
+                                            page_data.storage_s3_bucket = String::new();
+                                            page_data.storage_s3_region = String::new();
+                                            page_data.storage_s3_access_key = String::new();
+                                            page_data.storage_s3_secret_key = String::new();
+                                            page_data.storage_s3_endpoint = String::new();
+                                            page_data.storage_azure_account_name = String::new();
+                                            page_data.storage_azure_account_key = String::new();
+                                            page_data.storage_azure_container_name = String::new();
+                                            page_data.storage_gcs_bucket = String::new();
+                                            page_data.storage_gcs_project_id = String::new();
+                                            page_data.storage_gcs_service_account_key = String::new();
+                                            page_data.storage_local_base_path = String::new();
+                                        }
+                                        page_data.is_editing_storage = false;
+                                        page_data.storage_save_error = None;
+                                    }
+                                    
+                                    if page_data.is_saving_storage {
+                                        ui.add(egui::Spinner::new());
+                                    }
+                                } else if ui.button("Configure").clicked() {
+                                    page_data.is_editing_storage = true;
+                                }
+                            });
+                        });
+                        
+                        ui.separator();
+                        ui.add_space(10.0);
+                        
+                        if page_data.is_editing_storage {
+                            // Provider selection
+                            ui.horizontal(|ui| {
+                                ui.label("Provider:");
+                                egui::ComboBox::from_label("")
+                                    .selected_text(if page_data.storage_provider.is_empty() { 
+                                        "Select provider" 
+                                    } else { 
+                                        &page_data.storage_provider 
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut page_data.storage_provider, "s3".to_string(), "Amazon S3");
+                                        ui.selectable_value(&mut page_data.storage_provider, "azure".to_string(), "Azure Blob Storage");
+                                        ui.selectable_value(&mut page_data.storage_provider, "gcs".to_string(), "Google Cloud Storage");
+                                        ui.selectable_value(&mut page_data.storage_provider, "local".to_string(), "Local Storage");
+                                    });
+                            });
+                            
+                            ui.add_space(10.0);
+                            
+                            // Provider-specific fields
+                            match page_data.storage_provider.as_str() {
+                                "s3" => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Bucket:");
+                                        ui.text_edit_singleline(&mut page_data.storage_s3_bucket);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Region:");
+                                        ui.text_edit_singleline(&mut page_data.storage_s3_region);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Access Key:");
+                                        ui.text_edit_singleline(&mut page_data.storage_s3_access_key);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Secret Key:");
+                                        ui.add(egui::TextEdit::singleline(&mut page_data.storage_s3_secret_key).password(true));
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Endpoint (optional):");
+                                        ui.text_edit_singleline(&mut page_data.storage_s3_endpoint);
+                                    });
+                                }
+                                "azure" => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Account Name:");
+                                        ui.text_edit_singleline(&mut page_data.storage_azure_account_name);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Account Key:");
+                                        ui.add(egui::TextEdit::singleline(&mut page_data.storage_azure_account_key).password(true));
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Container Name:");
+                                        ui.text_edit_singleline(&mut page_data.storage_azure_container_name);
+                                    });
+                                }
+                                "gcs" => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Bucket:");
+                                        ui.text_edit_singleline(&mut page_data.storage_gcs_bucket);
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Project ID:");
+                                        ui.text_edit_singleline(&mut page_data.storage_gcs_project_id);
+                                    });
+                                    ui.vertical(|ui| {
+                                        ui.label("Service Account Key (JSON):");
+                                        ui.text_edit_multiline(&mut page_data.storage_gcs_service_account_key);
+                                    });
+                                }
+                                "local" => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Base Path:");
+                                        ui.text_edit_singleline(&mut page_data.storage_local_base_path);
+                                    });
+                                }
+                                _ => {
+                                    ui.label("Please select a storage provider.");
+                                }
+                            }
+                        } else {
+                            // Show current configuration (read-only)
+                            if let Some(storage_config) = &project.storage_config {
+                                if let Some(provider_type) = storage_config.get("type").and_then(|v| v.as_str()) {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Provider:");
+                                        ui.label(match provider_type {
+                                            "s3" => "Amazon S3",
+                                            "azure" => "Azure Blob Storage",
+                                            "gcs" => "Google Cloud Storage",
+                                            "local" => "Local Storage",
+                                            _ => provider_type,
+                                        });
+                                    });
+                                    
+                                    match provider_type {
+                                        "s3" => {
+                                            if let Some(bucket) = storage_config.get("bucket").and_then(|v| v.as_str()) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Bucket:");
+                                                    ui.label(bucket);
+                                                });
+                                            }
+                                            if let Some(region) = storage_config.get("region").and_then(|v| v.as_str()) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Region:");
+                                                    ui.label(region);
+                                                });
+                                            }
+                                        }
+                                        "azure" => {
+                                            if let Some(account_name) = storage_config.get("account_name").and_then(|v| v.as_str()) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Account Name:");
+                                                    ui.label(account_name);
+                                                });
+                                            }
+                                            if let Some(container_name) = storage_config.get("container_name").and_then(|v| v.as_str()) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Container:");
+                                                    ui.label(container_name);
+                                                });
+                                            }
+                                        }
+                                        "gcs" => {
+                                            if let Some(bucket) = storage_config.get("bucket").and_then(|v| v.as_str()) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Bucket:");
+                                                    ui.label(bucket);
+                                                });
+                                            }
+                                            if let Some(project_id) = storage_config.get("project_id").and_then(|v| v.as_str()) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Project ID:");
+                                                    ui.label(project_id);
+                                                });
+                                            }
+                                        }
+                                        "local" => {
+                                            if let Some(base_path) = storage_config.get("base_path").and_then(|v| v.as_str()) {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("Base Path:");
+                                                    ui.label(base_path);
+                                                });
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    ui.label("No storage configuration set.");
+                                }
+                            } else {
+                                ui.label("No storage configuration set.");
+                            }
+                        }
+                        
+                        // Show save error
+                        if let Some(error) = &page_data.storage_save_error {
+                            ui.add_space(10.0);
+                            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
                         }
                     });
                 });
@@ -464,6 +848,51 @@ pub fn handle_delete_project_task(
     }
 }
 
+pub fn handle_save_storage_config_task(
+    mut commands: Commands,
+    mut page_data: ResMut<ProjectSettingsPageData>,
+    mut projects_state: ResMut<ProjectsState>,
+    auth_state: Res<AuthState>,
+    mut save_tasks: Query<(Entity, &SaveStorageConfigTask)>,
+) {
+    for (entity, task) in save_tasks.iter_mut() {
+        if let Some(jwt) = auth_state.get_jwt() {
+            let jwt = jwt.clone();
+            let project_id = task.project_id.clone();
+            let storage_config = task.storage_config.clone();
+            
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(crate::auth::update_project_storage_config(&jwt, &project_id, storage_config)) {
+                Ok(updated_project) => {
+                    // Update the project in projects_state
+                    if let Some(project) = projects_state.projects.iter_mut().find(|p| p.id == updated_project.id) {
+                        *project = updated_project.clone();
+                        
+                        // Update page data to reflect the changes
+                        if Some(&project.id) == page_data.selected_project_id.as_ref() {
+                            if let Some(storage_config) = &updated_project.storage_config {
+                                parse_storage_config(&mut page_data, storage_config);
+                            }
+                        }
+                    }
+                    
+                    page_data.is_saving_storage = false;
+                    page_data.is_editing_storage = false;
+                    page_data.storage_save_error = None;
+                }
+                Err(error) => {
+                    page_data.storage_save_error = Some(error);
+                    page_data.is_saving_storage = false;
+                }
+            }
+        } else {
+            page_data.storage_save_error = Some("Not authenticated".to_string());
+            page_data.is_saving_storage = false;
+        }
+        commands.entity(entity).despawn();
+    }
+}
+
 pub struct ProjectSettingsPlugin;
 
 impl Plugin for ProjectSettingsPlugin {
@@ -473,6 +902,7 @@ impl Plugin for ProjectSettingsPlugin {
                update,
                handle_save_project_task,
                handle_delete_project_task,
+               handle_save_storage_config_task,
                handle_sync_events,
            ).run_if(in_state(AppState::ProjectSettings)))
            .add_systems(

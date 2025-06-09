@@ -61,10 +61,16 @@ pub fn setup(
     println!("url {:?}", params.url);
     let image_entity =
         match image_loader::spawn_image_sprite(&mut commands, &mut images, &params.url) {
-            Ok(entity) => entity,
+            Ok(entity) => {
+                println!("Image loaded successfully");
+                entity
+            },
             Err(e) => {
                 eprintln!("load_image error: {}", e);
-                return;
+                eprintln!("Failed to load image from URL: {}", params.url);
+                // Create a placeholder entity even when image loading fails
+                // This prevents the DetailData resource from not being created
+                commands.spawn(Sprite::default()).id()
             }
         };
 
@@ -78,7 +84,7 @@ pub fn setup(
         line_scale: 3.0,
     };
 
-    // add resource
+    // add resource - always create this even if image loading failed
     commands.insert_resource(DetailData {
         image_entity,
         selected_class: 1,

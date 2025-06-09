@@ -93,6 +93,7 @@ async fn main() -> std::io::Result<()> {
             .route("/projects/{id}", web::get().to(projects::get_project))
             .route("/projects/{id}", web::put().to(projects::update_project))
             .route("/projects/{id}", web::delete().to(projects::delete_project))
+            .route("/projects/{id}/storage-config", web::put().to(projects::update_storage_config))
             .route("/projects/{project_id}/tasks", web::post().to(tasks::create_task))
             .route("/projects/{project_id}/tasks", web::get().to(tasks::list_tasks))
             .route("/projects/{project_id}/tasks/{task_id}", web::get().to(tasks::get_task))

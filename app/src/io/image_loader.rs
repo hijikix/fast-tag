@@ -2,39 +2,111 @@ use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
 
 pub async fn download_image_bytes(url: &str) -> Option<Vec<u8>> {
+    println!("Downloading from URL: {}", url);
+    
     let response = match reqwest::get(url).await {
-        Ok(response) => response,
+        Ok(response) => {
+            println!("HTTP response status: {}", response.status());
+            if !response.status().is_success() {
+                eprintln!("HTTP error: {}", response.status());
+                return None;
+            }
+            response
+        },
         Err(e) => {
-            eprintln!("image download error: {}", e);
+            eprintln!("Image download error: {}", e);
             return None;
         }
     };
 
+    // Check content type
+    if let Some(content_type) = response.headers().get("content-type") {
+        if let Ok(content_type_str) = content_type.to_str() {
+            println!("Content-Type: {}", content_type_str);
+            if !content_type_str.starts_with("image/") {
+                eprintln!("Warning: Content-Type is not an image type: {}", content_type_str);
+            }
+        }
+    }
+
     match response.bytes().await {
-        Ok(bytes) => Some(bytes.to_vec()),
+        Ok(bytes) => {
+            println!("Successfully downloaded {} bytes", bytes.len());
+            Some(bytes.to_vec())
+        },
         Err(e) => {
-            eprintln!("image bytes error: {}", e);
+            eprintln!("Image bytes error: {}", e);
             None
         }
     }
 }
 
 pub fn load_image_from_url(url: &str) -> Result<image::DynamicImage, image::ImageError> {
+    println!("Attempting to load image from URL: {}", url);
+    
+    // Check if URL is empty or invalid
+    if url.is_empty() {
+        eprintln!("Error: URL is empty");
+        return Err(image::ImageError::Unsupported(
+            image::error::UnsupportedError::from_format_and_kind(
+                image::error::ImageFormatHint::Unknown,
+                image::error::UnsupportedErrorKind::Format(image::error::ImageFormatHint::Unknown),
+            ),
+        ));
+    }
+    
     let rt = tokio::runtime::Runtime::new().unwrap();
     let image_bytes = rt.block_on(download_image_bytes(url));
 
     if let Some(bytes) = image_bytes {
-        let image = image::load_from_memory(&bytes)?;
-        println!("image loaded!!!");
-        return Ok(image);
+        println!("Downloaded {} bytes from URL", bytes.len());
+        
+        // Try to guess the format from the first few bytes
+        if bytes.len() < 16 {
+            eprintln!("Error: Downloaded data is too small ({} bytes) to be a valid image", bytes.len());
+            return Err(image::ImageError::Unsupported(
+                image::error::UnsupportedError::from_format_and_kind(
+                    image::error::ImageFormatHint::Unknown,
+                    image::error::UnsupportedErrorKind::Format(image::error::ImageFormatHint::Unknown),
+                ),
+            ));
+        }
+        
+        // Check for common image format headers
+        let format_hint = if bytes.starts_with(b"\xFF\xD8\xFF") {
+            "JPEG"
+        } else if bytes.starts_with(b"\x89PNG\r\n\x1A\n") {
+            "PNG"
+        } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+            "GIF"
+        } else if bytes.starts_with(b"RIFF") && bytes.len() > 11 && &bytes[8..12] == b"WEBP" {
+            "WebP"
+        } else {
+            "Unknown"
+        };
+        
+        println!("Detected format: {}", format_hint);
+        
+        match image::load_from_memory(&bytes) {
+            Ok(image) => {
+                println!("Image loaded successfully! Dimensions: {}x{}", image.width(), image.height());
+                Ok(image)
+            }
+            Err(e) => {
+                eprintln!("Failed to decode image: {}", e);
+                eprintln!("First 32 bytes: {:?}", &bytes[..bytes.len().min(32)]);
+                Err(e)
+            }
+        }
+    } else {
+        eprintln!("Failed to download image bytes from URL");
+        Err(image::ImageError::Unsupported(
+            image::error::UnsupportedError::from_format_and_kind(
+                image::error::ImageFormatHint::Unknown,
+                image::error::UnsupportedErrorKind::Format(image::error::ImageFormatHint::Unknown),
+            ),
+        ))
     }
-
-    Err(image::ImageError::Unsupported(
-        image::error::UnsupportedError::from_format_and_kind(
-            image::error::ImageFormatHint::Unknown,
-            image::error::UnsupportedErrorKind::Format(image::error::ImageFormatHint::Unknown),
-        ),
-    ))
 }
 
 pub fn create_bevy_image_from_dynamic(dynamic_image: image::DynamicImage) -> Image {

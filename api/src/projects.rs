@@ -40,6 +40,11 @@ pub struct UpdateProjectRequest {
     pub storage_config: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateStorageConfigRequest {
+    pub storage_config: serde_json::Value,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ProjectResponse {
     pub project: Project,
@@ -226,6 +231,42 @@ pub async fn delete_project(
     }
 }
 
+pub async fn update_storage_config(
+    req: HttpRequest,
+    path: web::Path<String>,
+    payload: web::Json<UpdateStorageConfigRequest>,
+    pool: web::Data<Pool<Postgres>>,
+    config: web::Data<crate::auth::OAuthConfig>,
+) -> impl Responder {
+    // Extract and verify JWT token
+    let claims = match extract_user_claims(&req, &config) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+
+    let user_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => return HttpResponse::BadRequest().json("Invalid user ID"),
+    };
+
+    let project_id = match Uuid::parse_str(&path.into_inner()) {
+        Ok(id) => id,
+        Err(_) => return HttpResponse::BadRequest().json("Invalid project ID"),
+    };
+
+    // Validate storage config
+    if let Err(e) = validate_storage_config(&payload.storage_config) {
+        return HttpResponse::BadRequest().json(format!("Invalid storage configuration: {}", e));
+    }
+
+    // Update storage config
+    match update_storage_config_in_db(&pool, project_id, &payload.storage_config, user_id).await {
+        Ok(Some(project)) => HttpResponse::Ok().json(ProjectResponse { project }),
+        Ok(None) => HttpResponse::NotFound().json("Project not found or access denied"),
+        Err(_) => HttpResponse::InternalServerError().json("Failed to update storage configuration"),
+    }
+}
+
 async fn create_project_in_db(
     pool: &Pool<Postgres>,
     name: &str,
@@ -400,6 +441,51 @@ async fn delete_project_from_db(
     tx.commit().await?;
 
     Ok(result.rows_affected() > 0)
+}
+
+async fn update_storage_config_in_db(
+    pool: &Pool<Postgres>,
+    project_id: Uuid,
+    storage_config: &serde_json::Value,
+    user_id: Uuid,
+) -> Result<Option<Project>, sqlx::Error> {
+    let now = Utc::now();
+
+    // Check if user has owner role for this project
+    let has_permission = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM project_members pm
+            INNER JOIN projects p ON pm.project_id = p.id
+            WHERE p.id = $1 AND pm.user_id = $2 AND (pm.role = 'owner' OR p.owner_id = $2)
+        )
+        "#
+    )
+    .bind(project_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+
+    if !has_permission {
+        return Ok(None);
+    }
+
+    // Update only the storage config
+    let updated_project = sqlx::query_as::<_, Project>(
+        r#"
+        UPDATE projects 
+        SET storage_config = $1, updated_at = $2
+        WHERE id = $3
+        RETURNING id, name, description, storage_config, owner_id, created_at, updated_at
+        "#
+    )
+    .bind(storage_config)
+    .bind(now)
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(updated_project)
 }
 
 fn extract_user_claims(
@@ -767,6 +853,147 @@ mod tests {
         let req = test::TestRequest::delete()
             .uri(&format!("/projects/{}", project.id))
             .insert_header(("Authorization", format!("Bearer {}", token)))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_update_storage_config_success() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = create_project_in_db(&pool, "Test Project", Some("Description"), None, user.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{id}/storage-config", web::put().to(update_storage_config))
+        ).await;
+
+        let storage_config = serde_json::json!({
+            "type": "s3",
+            "region": "us-east-1",
+            "bucket": "test-bucket",
+            "access_key": "test-access-key",
+            "secret_key": "test-secret-key"
+        });
+
+        let update_request = UpdateStorageConfigRequest {
+            storage_config: storage_config.clone(),
+        };
+
+        let req = test::TestRequest::put()
+            .uri(&format!("/projects/{}/storage-config", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .set_json(update_request)
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert!(resp.status().is_success());
+
+        let body: serde_json::Value = test::read_body_json(resp).await;
+        assert_eq!(body["project"]["storage_config"], storage_config);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_update_storage_config_invalid_config() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = create_project_in_db(&pool, "Test Project", Some("Description"), None, user.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{id}/storage-config", web::put().to(update_storage_config))
+        ).await;
+
+        let invalid_storage_config = serde_json::json!({
+            "type": "invalid_provider"
+        });
+
+        let update_request = UpdateStorageConfigRequest {
+            storage_config: invalid_storage_config,
+        };
+
+        let req = test::TestRequest::put()
+            .uri(&format!("/projects/{}/storage-config", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .set_json(update_request)
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_update_storage_config_not_owner() {
+        let pool = test_utils::setup_test_db().await;
+        let user1 = test_utils::create_test_user_with_details(&pool).await;
+        
+        let user2_id = Uuid::new_v4();
+        let user2 = sqlx::query_as::<_, User>(
+            r#"
+            INSERT INTO users (id, email, name, avatar_url, provider, provider_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, email, name, avatar_url, provider, provider_id, created_at, updated_at
+            "#
+        )
+        .bind(user2_id)
+        .bind("test2@example.com")
+        .bind("Test User 2")
+        .bind(None::<String>)
+        .bind("google")
+        .bind("google-id-456")
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to create test user 2");
+
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user2);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = create_project_in_db(&pool, "Test Project", Some("Description"), None, user1.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{id}/storage-config", web::put().to(update_storage_config))
+        ).await;
+
+        let storage_config = serde_json::json!({
+            "type": "s3",
+            "region": "us-east-1",
+            "bucket": "test-bucket",
+            "access_key": "test-access-key",
+            "secret_key": "test-secret-key"
+        });
+
+        let update_request = UpdateStorageConfigRequest {
+            storage_config,
+        };
+
+        let req = test::TestRequest::put()
+            .uri(&format!("/projects/{}/storage-config", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .set_json(update_request)
             .to_request();
 
         let resp = test::call_service(&app, req).await;
