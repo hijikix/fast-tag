@@ -1,6 +1,6 @@
 use crate::ui::components::egui_common;
 use crate::app::state::AppState;
-use crate::auth::{AuthState, Task, fetch_tasks};
+use crate::auth::{AuthState, TaskWithResolvedUrl, fetch_tasks};
 use bevy::prelude::*;
 use bevy::ui::Interaction;
 use bevy_egui::{EguiContexts, EguiContextPass, egui};
@@ -27,13 +27,13 @@ pub struct TasksPageData {
 
 #[derive(Resource, Default)]
 pub struct TasksState {
-    pub tasks: Vec<Task>,
+    pub tasks: Vec<TaskWithResolvedUrl>,
     pub fetch_error: Option<String>,
     pub is_fetching: bool,
 }
 
 impl TasksState {
-    pub fn set_tasks(&mut self, tasks: Vec<Task>) {
+    pub fn set_tasks(&mut self, tasks: Vec<TaskWithResolvedUrl>) {
         self.tasks = tasks;
         self.fetch_error = None;
         self.is_fetching = false;
@@ -50,7 +50,7 @@ impl TasksState {
     }
     
     #[allow(dead_code)]
-    pub fn add_task(&mut self, task: Task) {
+    pub fn add_task(&mut self, task: TaskWithResolvedUrl) {
         self.tasks.push(task);
     }
     
@@ -183,24 +183,40 @@ pub fn ui_system(
                     ui.label("Create your first task to get started!");
                 });
             } else {
-                for task in &tasks_state.tasks {
+                for task_with_url in &tasks_state.tasks {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
-                                ui.strong(&task.name);
-                                ui.label(format!("Status: {}", format_status(&task.status)));
-                                if let Some(url) = &task.resource_url {
+                                ui.strong(&task_with_url.task.name);
+                                ui.label(format!("Status: {}", format_status(&task_with_url.task.status)));
+                                if let Some(url) = &task_with_url.task.resource_url {
                                     ui.weak(format!("Resource: {}", url));
                                 }
-                                ui.weak(format!("Created: {}", format_date(&task.created_at)));
+                                ui.weak(format!("Created: {}", format_date(&task_with_url.task.created_at)));
                             });
                             
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("Open").clicked() && task.resource_url.is_some() {
-                                    println!("Opening task: {}", task.name);
+                                // Use resolved_resource_url if available, fallback to original resource_url
+                                let url_to_use = task_with_url.resolved_resource_url.as_ref()
+                                    .or(task_with_url.task.resource_url.as_ref());
+                                
+                                if ui.button("Open").clicked() && url_to_use.is_some() {
+                                    let url = url_to_use.cloned().unwrap_or_default();
+                                    println!("Opening task: {}", task_with_url.task.name);
+                                    println!("Task original resource URL: '{:?}'", task_with_url.task.resource_url);
+                                    println!("Task resolved resource URL: '{:?}'", task_with_url.resolved_resource_url);
+                                    println!("Using URL: '{}'", url);
+                                    
+                                    // Validate URL before transitioning
+                                    if url.is_empty() {
+                                        eprintln!("Error: Task resource URL is empty for task '{}'", task_with_url.task.name);
+                                    } else if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("file://") {
+                                        eprintln!("Warning: Task resource URL might not be a valid URL: '{}'", url);
+                                    }
+                                    
                                     // Set task resource URL parameter for Detail page
                                     commands.insert_resource(detail::Parameters {
-                                        url: task.resource_url.clone().unwrap_or_default(),
+                                        url,
                                     });
                                     next_state.set(AppState::Detail);
                                 }

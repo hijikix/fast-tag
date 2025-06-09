@@ -110,6 +110,7 @@ pub struct Project {
     pub description: Option<String>,
     #[allow(dead_code)]
     pub owner_id: String,
+    pub storage_config: Option<serde_json::Value>,
     pub created_at: String,
     #[allow(dead_code)]
     pub updated_at: String,
@@ -130,6 +131,11 @@ pub struct CreateProjectRequest {
 pub struct UpdateProjectRequest {
     pub name: String,
     pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateStorageConfigRequest {
+    pub storage_config: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -264,6 +270,32 @@ pub async fn delete_project(jwt: &str, project_id: &str) -> Result<(), String> {
     }
 }
 
+pub async fn update_project_storage_config(jwt: &str, project_id: &str, storage_config: serde_json::Value) -> Result<Project, String> {
+    let client = reqwest::Client::new();
+    let request_body = UpdateStorageConfigRequest {
+        storage_config,
+    };
+    
+    let response = client
+        .put(format!("http://localhost:8080/projects/{}/storage-config", project_id))
+        .bearer_auth(jwt)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if response.status().is_success() {
+        let project_response: ProjectResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+        Ok(project_response.project)
+    } else {
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+        Err(format!("API error: {}", error_text))
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Task {
     #[allow(dead_code)]
@@ -280,9 +312,16 @@ pub struct Task {
     pub completed_at: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct TaskWithResolvedUrl {
+    #[serde(flatten)]
+    pub task: Task,
+    pub resolved_resource_url: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TasksListResponse {
-    pub tasks: Vec<Task>,
+    pub tasks: Vec<TaskWithResolvedUrl>,
 }
 
 #[derive(Debug, Serialize)]
@@ -302,10 +341,12 @@ pub struct UpdateTaskRequest {
 pub struct TaskResponse {
     #[allow(dead_code)]
     pub task: Task,
+    #[allow(dead_code)]
+    pub resolved_resource_url: Option<String>,
 }
 
 
-pub async fn fetch_tasks(jwt: &str, project_id: &str) -> Result<Vec<Task>, String> {
+pub async fn fetch_tasks(jwt: &str, project_id: &str) -> Result<Vec<TaskWithResolvedUrl>, String> {
     let client = reqwest::Client::new();
     let response = client
         .get(format!("http://localhost:8080/projects/{}/tasks", project_id))
