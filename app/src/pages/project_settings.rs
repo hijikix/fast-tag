@@ -2,6 +2,10 @@ use crate::ui::components::egui_common;
 use crate::app::state::AppState;
 use crate::auth::{AuthState, ProjectsState};
 use crate::sync::{SyncState, SyncRequestEvent, SyncRequest, SyncCompletedEvent, SyncErrorEvent};
+use crate::annotations::{
+    AnnotationState, CreateCategoryEvent, CreateCategoryRequest,
+    LoadCategoriesEvent, CategoryCreatedEvent, AnnotationErrorEvent,
+};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiContextPass, egui};
 use uuid::Uuid;
@@ -59,19 +63,31 @@ pub struct ProjectSettingsPageData {
     pub storage_local_base_path: String,
     pub storage_save_error: Option<String>,
     pub is_saving_storage: bool,
+    // Category management fields
+    pub new_category_name: String,
+    pub new_category_color: [f32; 3],
+    pub new_category_description: String,
+    pub is_creating_category: bool,
+    pub category_error: Option<String>,
 }
 
 pub fn setup(
     mut commands: Commands,
     projects_state: Res<ProjectsState>,
     parameters: Option<Res<Parameters>>,
+    mut annotation_state: ResMut<AnnotationState>,
+    mut load_categories_events: EventWriter<LoadCategoriesEvent>,
+    auth_state: Res<AuthState>,
 ) {
     println!("project_settings setup");
     
-    let mut page_data = ProjectSettingsPageData::default();
+    let mut page_data = ProjectSettingsPageData {
+        new_category_color: [1.0, 0.0, 0.0], // Default to red
+        ..Default::default()
+    };
     
     // Initialize with project from parameters if available, otherwise use first project
-    if let Some(params) = parameters {
+    let selected_project_id = if let Some(params) = parameters {
         if let Some(project) = projects_state.projects.iter().find(|p| p.id == params.project_id) {
             page_data.selected_project_id = Some(project.id.clone());
             page_data.project_name = project.name.clone();
@@ -81,6 +97,10 @@ pub fn setup(
             if let Some(storage_config) = &project.storage_config {
                 parse_storage_config(&mut page_data, storage_config);
             }
+            
+            Some(project.id.clone())
+        } else {
+            None
         }
     } else if let Some(project) = projects_state.projects.first() {
         page_data.selected_project_id = Some(project.id.clone());
@@ -90,6 +110,22 @@ pub fn setup(
         // Initialize storage configuration from project
         if let Some(storage_config) = &project.storage_config {
             parse_storage_config(&mut page_data, storage_config);
+        }
+        
+        Some(project.id.clone())
+    } else {
+        None
+    };
+    
+    // Load categories for the selected project
+    if let (Some(project_id_str), Some(token)) = (selected_project_id, auth_state.get_jwt()) {
+        if let Ok(project_uuid) = Uuid::parse_str(&project_id_str) {
+            annotation_state.current_project_id = Some(project_uuid);
+            // Load categories for this project
+            load_categories_events.write(LoadCategoriesEvent {
+                project_id: project_uuid,
+                token: token.clone(),
+            });
         }
     }
     
@@ -232,7 +268,9 @@ pub fn ui_system(
     projects_state: Res<ProjectsState>,
     auth_state: Res<AuthState>,
     sync_state: Res<SyncState>,
+    annotation_state: Res<AnnotationState>,
     mut sync_request_events: EventWriter<SyncRequestEvent>,
+    mut create_category_events: EventWriter<CreateCategoryEvent>,
 ) {
     egui_common::ui_top_panel(&mut contexts, current_state, &mut next_state);
 
@@ -634,6 +672,132 @@ pub fn ui_system(
                 
                 ui.add_space(20.0);
                 
+                // Category Management section
+                ui.group(|ui| {
+                    ui.vertical(|ui| {
+                        ui.strong("Annotation Categories");
+                        ui.separator();
+                        ui.add_space(10.0);
+                        
+                        // Show existing categories
+                        ui.label("Existing Categories:");
+                        ui.add_space(5.0);
+                        
+                        if annotation_state.categories.is_empty() {
+                            ui.colored_label(egui::Color32::GRAY, "No categories created yet.");
+                        } else {
+                            for category in &annotation_state.categories {
+                                ui.horizontal(|ui| {
+                                    // Color indicator
+                                    if let Some(color) = &category.color {
+                                        if let Ok(hex) = u32::from_str_radix(&color[1..], 16) {
+                                            let r = ((hex >> 16) & 0xFF) as u8;
+                                            let g = ((hex >> 8) & 0xFF) as u8;
+                                            let b = (hex & 0xFF) as u8;
+                                            let egui_color = egui::Color32::from_rgb(r, g, b);
+                                            ui.painter().rect_filled(
+                                                egui::Rect::from_min_size(
+                                                    ui.cursor().min,
+                                                    egui::Vec2::new(12.0, 12.0)
+                                                ),
+                                                2.0,
+                                                egui_color,
+                                            );
+                                            ui.add_space(16.0);
+                                        }
+                                    }
+                                    
+                                    ui.label(&category.name);
+                                    
+                                    if let Some(description) = &category.description {
+                                        ui.label(format!("- {}", description));
+                                    }
+                                });
+                            }
+                        }
+                        
+                        ui.add_space(15.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        
+                        // Create new category form
+                        ui.label("Create New Category:");
+                        ui.add_space(5.0);
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Name:");
+                            ui.text_edit_singleline(&mut page_data.new_category_name);
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Color:");
+                            egui::color_picker::color_edit_button_rgb(ui, &mut page_data.new_category_color);
+                        });
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Description:");
+                            ui.text_edit_singleline(&mut page_data.new_category_description);
+                        });
+                        
+                        ui.add_space(10.0);
+                        
+                        ui.horizontal(|ui| {
+                            let can_create = !page_data.new_category_name.trim().is_empty() && 
+                                           !page_data.is_creating_category;
+                            
+                            if ui.add_enabled(can_create, egui::Button::new("➕ Create Category")).clicked() {
+                                if let Some(token) = auth_state.get_jwt() {
+                                    if let Some(project_id_str) = &page_data.selected_project_id {
+                                        if let Ok(project_uuid) = Uuid::parse_str(project_id_str) {
+                                            page_data.is_creating_category = true;
+                                            page_data.category_error = None;
+                                            
+                                            // Convert RGB color to hex
+                                            let hex_color = format!(
+                                                "#{:02x}{:02x}{:02x}",
+                                                (page_data.new_category_color[0] * 255.0) as u8,
+                                                (page_data.new_category_color[1] * 255.0) as u8,
+                                                (page_data.new_category_color[2] * 255.0) as u8
+                                            );
+                                            
+                                            let request = CreateCategoryRequest {
+                                                name: page_data.new_category_name.clone(),
+                                                supercategory: None,
+                                                color: Some(hex_color),
+                                                description: if page_data.new_category_description.trim().is_empty() {
+                                                    None
+                                                } else {
+                                                    Some(page_data.new_category_description.clone())
+                                                },
+                                                coco_id: None,
+                                            };
+                                            
+                                            create_category_events.write(CreateCategoryEvent {
+                                                project_id: project_uuid,
+                                                request,
+                                                token: token.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if page_data.is_creating_category {
+                                ui.add(egui::Spinner::new());
+                                ui.label("Creating...");
+                            }
+                        });
+                        
+                        // Show category error
+                        if let Some(error) = &page_data.category_error {
+                            ui.add_space(10.0);
+                            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+                        }
+                    });
+                });
+                
+                ui.add_space(20.0);
+                
                 // Danger zone
                 ui.group(|ui| {
                     ui.vertical(|ui| {
@@ -780,6 +944,28 @@ pub fn handle_save_project_task(
     }
 }
 
+pub fn handle_category_events(
+    mut page_data: ResMut<ProjectSettingsPageData>,
+    mut category_created_events: EventReader<CategoryCreatedEvent>,
+    mut annotation_error_events: EventReader<AnnotationErrorEvent>,
+) {
+    for event in category_created_events.read() {
+        info!("Category created: {}", event.category.name);
+        page_data.is_creating_category = false;
+        page_data.category_error = None;
+        // Reset form
+        page_data.new_category_name.clear();
+        page_data.new_category_color = [1.0, 0.0, 0.0];
+        page_data.new_category_description.clear();
+    }
+    
+    for event in annotation_error_events.read() {
+        error!("Category creation error: {}", event.error);
+        page_data.is_creating_category = false;
+        page_data.category_error = Some(event.error.clone());
+    }
+}
+
 pub fn handle_sync_events(
     mut page_data: ResMut<ProjectSettingsPageData>,
     mut sync_completed_events: EventReader<SyncCompletedEvent>,
@@ -904,6 +1090,7 @@ impl Plugin for ProjectSettingsPlugin {
                handle_delete_project_task,
                handle_save_storage_config_task,
                handle_sync_events,
+               handle_category_events,
            ).run_if(in_state(AppState::ProjectSettings)))
            .add_systems(
                EguiContextPass,

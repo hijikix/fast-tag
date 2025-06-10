@@ -267,7 +267,7 @@ pub async fn update_storage_config(
     }
 }
 
-async fn create_project_in_db(
+pub async fn create_project_in_db(
     pool: &Pool<Postgres>,
     name: &str,
     description: Option<&str>,

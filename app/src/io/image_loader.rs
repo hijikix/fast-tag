@@ -117,10 +117,14 @@ pub fn spawn_image_sprite(
     commands: &mut Commands,
     images: &mut ResMut<Assets<Image>>,
     url: &str,
-) -> Result<Entity, image::ImageError> {
+) -> Result<(Entity, Vec2), image::ImageError> {
     let dynamic_image = load_image_from_url(url)?;
+    let width = dynamic_image.width() as f32;
+    let height = dynamic_image.height() as f32;
+    let dimensions = Vec2::new(width, height);
+    
     let image = create_bevy_image_from_dynamic(dynamic_image);
     let image_handle = images.add(image);
     let image_entity = commands.spawn(Sprite::from_image(image_handle)).id();
-    Ok(image_entity)
+    Ok((image_entity, dimensions))
 }

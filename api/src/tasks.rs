@@ -313,7 +313,7 @@ pub async fn delete_task(
     }
 }
 
-async fn create_task_in_db(
+pub async fn create_task_in_db(
     pool: &Pool<Postgres>,
     project_id: Uuid,
     name: &str,
