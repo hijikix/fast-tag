@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+mod annotations;
 mod app;
 mod ui;
 mod core;
@@ -38,6 +39,7 @@ fn main() {
         .init_resource::<UserState>()
         .init_resource::<ProjectsState>()
         .add_plugins(sync::SyncPlugin)
+        .add_plugins(annotations::AnnotationPlugin)
         .add_plugins(LoginPlugin)
         .add_plugins(TasksPlugin)
         .add_plugins(ProjectsPlugin)

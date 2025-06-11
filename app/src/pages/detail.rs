@@ -8,20 +8,29 @@ use crate::core::rectangle::{Rectangle, rect_color};
 use crate::io::image_loader;
 use crate::ui::components::egui_common;
 use crate::ui::detail_ui;
+use crate::annotations::{
+    AnnotationState, SaveAnnotationEvent, LoadAnnotationEvent, CreateCategoryEvent,
+    AnnotationSavedEvent, AnnotationLoadedEvent, CategoryCreatedEvent, AnnotationErrorEvent,
+    LoadCategoriesEvent,
+};
 use bevy::input::mouse::{MouseButtonInput, MouseWheel};
 use bevy::prelude::*;
 use bevy::text::Text2d;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiContextPass};
+use uuid;
 
 #[derive(Resource, Default)]
 pub struct Parameters {
     pub url: String,
+    pub task_id: Option<uuid::Uuid>,
+    pub project_id: Option<uuid::Uuid>,
 }
 
 #[derive(Resource)]
 pub struct DetailData {
     image_entity: Entity,
+    image_dimensions: Vec2,
     cursor_position: Option<Vec2>,
     selected_class: usize,
     camera_controller: CameraController,
@@ -54,23 +63,26 @@ pub fn setup(
     params: Res<Parameters>,
     mut images: ResMut<Assets<Image>>,
     mut config_store: ResMut<GizmoConfigStore>,
+    mut annotation_state: ResMut<AnnotationState>,
+    mut load_categories_events: EventWriter<LoadCategoriesEvent>,
+    auth_state: Res<crate::auth::AuthState>,
 ) {
     println!("detail setup");
 
     // load image
     println!("url {:?}", params.url);
-    let image_entity =
+    let (image_entity, image_dimensions) =
         match image_loader::spawn_image_sprite(&mut commands, &mut images, &params.url) {
-            Ok(entity) => {
-                println!("Image loaded successfully");
-                entity
+            Ok((entity, dimensions)) => {
+                println!("Image loaded successfully with dimensions: {:?}", dimensions);
+                (entity, dimensions)
             },
             Err(e) => {
                 eprintln!("load_image error: {}", e);
                 eprintln!("Failed to load image from URL: {}", params.url);
                 // Create a placeholder entity even when image loading fails
                 // This prevents the DetailData resource from not being created
-                commands.spawn(Sprite::default()).id()
+                (commands.spawn(Sprite::default()).id(), Vec2::new(100.0, 100.0))
             }
         };
 
@@ -87,6 +99,7 @@ pub fn setup(
     // add resource - always create this even if image loading failed
     commands.insert_resource(DetailData {
         image_entity,
+        image_dimensions,
         selected_class: 1,
         cursor_position: None,
         camera_controller: CameraController::default(),
@@ -98,6 +111,25 @@ pub fn setup(
     commands.insert_resource(InteractionState::default());
     commands.insert_resource(InteractionHandlers::default());
     commands.insert_resource(CommandHistory::default());
+    
+    // Set current task and project IDs for annotation system
+    if let Some(task_id) = params.task_id {
+        annotation_state.current_task_id = Some(task_id);
+    }
+    if let Some(project_id) = params.project_id {
+        annotation_state.current_project_id = Some(project_id);
+        
+        // Load categories for this project
+        if let Some(token) = auth_state.get_jwt() {
+            load_categories_events.write(LoadCategoriesEvent {
+                project_id,
+                token: token.clone(),
+            });
+            info!("Loading categories for project: {}", project_id);
+        } else {
+            warn!("No JWT token available for loading categories");
+        }
+    }
 }
 
 fn draw_rectangles(
@@ -304,6 +336,7 @@ pub fn update(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn ui_system(
     mut commands: Commands,
     mut contexts: EguiContexts,
@@ -312,11 +345,30 @@ pub fn ui_system(
     mut rectangles: ResMut<Rectangles>,
     mut selected_index: ResMut<SelectedRectangleIndex>,
     mut detail_data: ResMut<DetailData>,
+    annotation_state: Res<AnnotationState>,
+    auth_state: Res<crate::auth::AuthState>,
+    user_state: Res<crate::auth::UserState>,
+    projects_state: Res<crate::auth::ProjectsState>,
+    mut save_events: EventWriter<SaveAnnotationEvent>,
+    mut load_events: EventWriter<LoadAnnotationEvent>,
+    mut create_category_events: EventWriter<CreateCategoryEvent>,
 ) {
     egui_common::ui_top_panel(&mut contexts, current_state, &mut next_state);
 
     let rect_count_before = rectangles.0.len();
-    detail_ui::render_side_panels(&mut contexts, &mut rectangles.0, &mut selected_index.0);
+    detail_ui::render_side_panels_with_annotations(
+        &mut contexts, 
+        &mut rectangles.0, 
+        &mut selected_index.0,
+        &annotation_state,
+        &auth_state,
+        &user_state,
+        &projects_state,
+        &mut save_events,
+        &mut load_events,
+        &mut create_category_events,
+        detail_data.image_dimensions,
+    );
     
     // Check if rectangles were sorted (order might have changed)
     if rect_count_before == rectangles.0.len() && rect_count_before > 0 {
@@ -325,6 +377,74 @@ pub fn ui_system(
     }
 
     detail_ui::render_rectangle_editor_window(&mut contexts, &mut rectangles.0, selected_index.0);
+}
+
+pub fn handle_annotation_events(
+    mut annotation_saved_events: EventReader<AnnotationSavedEvent>,
+    mut annotation_loaded_events: EventReader<AnnotationLoadedEvent>,
+    mut category_created_events: EventReader<CategoryCreatedEvent>,
+    mut annotation_error_events: EventReader<AnnotationErrorEvent>,
+    mut rectangles: ResMut<Rectangles>,
+    mut commands: Commands,
+    mut detail_data: ResMut<DetailData>,
+) {
+    for event in annotation_saved_events.read() {
+        info!("Annotations saved successfully: {} annotations", event.annotations.len());
+    }
+    
+    for event in annotation_loaded_events.read() {
+        info!("Annotations loaded: {} annotations", event.annotations.len());
+        
+        // Convert loaded annotations back to rectangles
+        rectangles.0.clear();
+        for annotation_with_category in &event.annotations {
+            // Convert MS COCO bbox [x, y, width, height] back to rectangle
+            if annotation_with_category.bbox.len() >= 4 {
+                let coco_x = annotation_with_category.bbox[0] as f32;
+                let coco_y = annotation_with_category.bbox[1] as f32;
+                let width = annotation_with_category.bbox[2] as f32;
+                let height = annotation_with_category.bbox[3] as f32;
+                
+                // Transform from COCO coordinates (top-left origin) to Bevy coordinates (center-origin)
+                // Get image dimensions from DetailData
+                let img_width = detail_data.image_dimensions.x;
+                let img_height = detail_data.image_dimensions.y;
+                
+                // Transform X: subtract half image width to shift origin from left edge to center
+                let bevy_min_x = coco_x - (img_width / 2.0);
+                let bevy_max_x = (coco_x + width) - (img_width / 2.0);
+                
+                // Transform Y: flip Y axis and shift origin from top edge to center
+                // COCO Y increases downward, Bevy Y increases upward
+                let bevy_max_y = (img_height / 2.0) - coco_y;  // coco_y (top) becomes max_y in Bevy
+                let bevy_min_y = (img_height / 2.0) - (coco_y + height);  // coco_y + height (bottom) becomes min_y in Bevy
+                
+                let pos1 = Vec2::new(bevy_min_x, bevy_min_y);
+                let pos2 = Vec2::new(bevy_max_x, bevy_max_y);
+                
+                // Extract class from metadata if available
+                let class = if let Some(class_value) = annotation_with_category.metadata.get("class") {
+                    class_value.as_u64().unwrap_or(1) as usize
+                } else {
+                    1 // Default class
+                };
+                
+                let rectangle = Rectangle::new(class, pos1, pos2);
+                rectangles.0.push(rectangle);
+            }
+        }
+        
+        // Update text entities
+        update_text_entities(&mut commands, &mut detail_data, &rectangles);
+    }
+    
+    for event in category_created_events.read() {
+        info!("Category created: {}", event.category.name);
+    }
+    
+    for event in annotation_error_events.read() {
+        error!("Annotation error: {}", event.error);
+    }
 }
 
 pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
@@ -350,7 +470,7 @@ impl Plugin for DetailPlugin {
            .init_resource::<InteractionState>()
            .init_resource::<InteractionHandlers>()
            .add_systems(OnEnter(AppState::Detail), setup)
-           .add_systems(Update, update.run_if(in_state(AppState::Detail)))
+           .add_systems(Update, (update, handle_annotation_events).run_if(in_state(AppState::Detail)))
            .add_systems(
                EguiContextPass,
                ui_system.run_if(in_state(AppState::Detail)),

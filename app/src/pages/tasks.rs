@@ -4,6 +4,7 @@ use crate::auth::{AuthState, TaskWithResolvedUrl, fetch_tasks};
 use bevy::prelude::*;
 use bevy::ui::Interaction;
 use bevy_egui::{EguiContexts, EguiContextPass, egui};
+use uuid;
 
 use super::detail;
 
@@ -214,9 +215,21 @@ pub fn ui_system(
                                         eprintln!("Warning: Task resource URL might not be a valid URL: '{}'", url);
                                     }
                                     
+                                    // Parse project_id from parameters
+                                    let project_id = if let Some(params) = &parameters {
+                                        uuid::Uuid::parse_str(&params.project_id).ok()
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    // Parse task_id from string
+                                    let task_id = uuid::Uuid::parse_str(&task_with_url.task.id).ok();
+                                    
                                     // Set task resource URL parameter for Detail page
                                     commands.insert_resource(detail::Parameters {
                                         url,
+                                        task_id,
+                                        project_id,
                                     });
                                     next_state.set(AppState::Detail);
                                 }

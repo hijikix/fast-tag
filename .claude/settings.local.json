@@ -5,7 +5,10 @@
       "Bash(mkdir:*)",
       "Bash(grep:*)",
       "Bash(sed:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo run:*)",
+      "Bash(rg:*)"
     ],
     "deny": []
   },

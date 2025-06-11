@@ -6,6 +6,8 @@ mod projects;
 mod tasks;
 mod storage;
 mod sync;
+mod image_annotation_categories;
+mod annotations;
 
 #[cfg(test)]
 mod test_utils;
@@ -105,6 +107,18 @@ async fn main() -> std::io::Result<()> {
             .route("/projects/{project_id}/storage", web::get().to(storage::handlers::list_objects))
             .route("/projects/{project_id}/sync", web::post().to(sync::sync_storage_to_tasks))
             .route("/projects/{project_id}/sync/{sync_id}", web::get().to(sync::get_sync_status))
+            // Image annotation categories endpoints
+            .route("/projects/{project_id}/image-annotation-categories", web::post().to(image_annotation_categories::create_image_annotation_category))
+            .route("/projects/{project_id}/image-annotation-categories", web::get().to(image_annotation_categories::list_image_annotation_categories))
+            .route("/projects/{project_id}/image-annotation-categories/{category_id}", web::get().to(image_annotation_categories::get_image_annotation_category))
+            .route("/projects/{project_id}/image-annotation-categories/{category_id}", web::put().to(image_annotation_categories::update_image_annotation_category))
+            .route("/projects/{project_id}/image-annotation-categories/{category_id}", web::delete().to(image_annotation_categories::delete_image_annotation_category))
+            // Annotations endpoints
+            .route("/projects/{project_id}/tasks/{task_id}/annotations", web::post().to(annotations::create_annotation))
+            .route("/projects/{project_id}/tasks/{task_id}/annotations", web::get().to(annotations::list_annotations))
+            .route("/projects/{project_id}/tasks/{task_id}/annotations/{annotation_id}", web::get().to(annotations::get_annotation))
+            .route("/projects/{project_id}/tasks/{task_id}/annotations/{annotation_id}", web::put().to(annotations::update_annotation))
+            .route("/projects/{project_id}/tasks/{task_id}/annotations/{annotation_id}", web::delete().to(annotations::delete_annotation))
     })
     .bind("127.0.0.1:8080")?
     .run()

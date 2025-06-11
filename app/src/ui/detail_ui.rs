@@ -2,6 +2,11 @@ use bevy::prelude::*;
 use bevy_egui::egui::scroll_area::ScrollBarVisibility;
 use bevy_egui::{EguiContexts, egui};
 use crate::core::rectangle::{Rectangle, rect_color};
+use crate::annotations::{
+    AnnotationState, SaveAnnotationEvent, LoadAnnotationEvent, CreateCategoryEvent,
+    CreateAnnotationRequest, AnnotationCategory,
+};
+use crate::auth::{AuthState, UserState, ProjectsState};
 
 pub fn render_rectangle_list(
     ui: &mut egui::Ui,
@@ -225,19 +230,231 @@ pub fn render_rectangle_editor(
     }
 }
 
-pub fn render_side_panels(
+
+pub fn render_annotation_controls(
+    ui: &mut egui::Ui,
+    rectangles: &Vec<Rectangle>,
+    annotation_state: &AnnotationState,
+    auth_state: &AuthState,
+    _user_state: &UserState,
+    _projects_state: &ProjectsState,
+    save_events: &mut EventWriter<SaveAnnotationEvent>,
+    load_events: &mut EventWriter<LoadAnnotationEvent>,
+    _create_category_events: &mut EventWriter<CreateCategoryEvent>,
+    image_dimensions: Vec2,
+) {
+    ui.group(|ui| {
+        ui.vertical_centered(|ui| {
+            ui.heading("Annotations");
+        });
+        
+        ui.separator();
+        
+        // Category management
+        ui.collapsing("Categories", |ui| {
+            // Show existing categories
+            ui.label("Available Categories:");
+            for category in &annotation_state.categories {
+                ui.horizontal(|ui| {
+                    if let Some(color) = &category.color {
+                        if let Ok(hex) = u32::from_str_radix(&color[1..], 16) {
+                            let r = ((hex >> 16) & 0xFF) as u8;
+                            let g = ((hex >> 8) & 0xFF) as u8;
+                            let b = (hex & 0xFF) as u8;
+                            let egui_color = egui::Color32::from_rgb(r, g, b);
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    ui.cursor().min,
+                                    egui::Vec2::new(12.0, 12.0)
+                                ),
+                                2.0,
+                                egui_color,
+                            );
+                            ui.add_space(16.0);
+                        }
+                    }
+                    ui.label(&category.name);
+                });
+            }
+            
+        });
+        
+        ui.separator();
+        
+        // Show class to category mapping
+        if !annotation_state.categories.is_empty() {
+            ui.collapsing("Class → Category Mapping", |ui| {
+                ui.label("Rectangle classes will map to categories as follows:");
+                for class in 1..=9 {
+                    if !annotation_state.categories.is_empty() {
+                        let category_index = ((class - 1) % annotation_state.categories.len()) as usize;
+                        let category = &annotation_state.categories[category_index];
+                        
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Class {}: ", class));
+                            
+                            // Show category color if available
+                            if let Some(color) = &category.color {
+                                if let Ok(hex) = u32::from_str_radix(&color[1..], 16) {
+                                    let r = ((hex >> 16) & 0xFF) as u8;
+                                    let g = ((hex >> 8) & 0xFF) as u8;
+                                    let b = (hex & 0xFF) as u8;
+                                    let egui_color = egui::Color32::from_rgb(r, g, b);
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_size(
+                                            ui.cursor().min,
+                                            egui::Vec2::new(12.0, 12.0)
+                                        ),
+                                        2.0,
+                                        egui_color,
+                                    );
+                                    ui.add_space(16.0);
+                                }
+                            }
+                            
+                            ui.label(&category.name);
+                        });
+                    }
+                }
+            });
+            
+            ui.separator();
+        }
+        
+        // Save/Load buttons
+        ui.horizontal(|ui| {
+            if ui.button("💾 Save Annotations").clicked() {
+                if let Some(token) = &auth_state.jwt {
+                    if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
+                        let annotations = convert_rectangles_to_annotations(rectangles, &annotation_state.categories, image_dimensions);
+                        save_events.write(SaveAnnotationEvent {
+                            project_id,
+                            task_id,
+                            annotations,
+                            token: token.clone(),
+                        });
+                    }
+                }
+            }
+            
+            if ui.button("📁 Load Annotations").clicked() {
+                if let Some(token) = &auth_state.jwt {
+                    if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
+                        load_events.write(LoadAnnotationEvent {
+                            project_id,
+                            task_id,
+                            token: token.clone(),
+                        });
+                    }
+                }
+            }
+        });
+        
+        if annotation_state.is_saving {
+            ui.label("⏳ Saving annotations...");
+        }
+    });
+}
+
+fn convert_rectangles_to_annotations(rectangles: &[Rectangle], categories: &[AnnotationCategory], image_dimensions: Vec2) -> Vec<CreateAnnotationRequest> {
+    let mut annotations = Vec::new();
+    
+    // Image dimensions
+    let img_width = image_dimensions.x;
+    let img_height = image_dimensions.y;
+    
+    for rect in rectangles {
+        // Map class (1-9) to category
+        // For now, use modulo to cycle through available categories
+        // Or map class 1 -> category 0, class 2 -> category 1, etc.
+        let category_id = if !categories.is_empty() {
+            let category_index = ((rect.class - 1) % categories.len()) as usize;
+            categories[category_index].id
+        } else {
+            // If no categories exist, we need to skip this annotation
+            // or use a default UUID (this should ideally not happen)
+            warn!("No categories available for annotation mapping");
+            continue;
+        };
+        
+        // Get rectangle bounds in Bevy coordinates (center-origin)
+        let (pos1, pos2) = rect.position;
+        let min_x = pos1.x.min(pos2.x);
+        let min_y = pos1.y.min(pos2.y);
+        let max_x = pos1.x.max(pos2.x);
+        let max_y = pos1.y.max(pos2.y);
+        
+        // Transform from Bevy coordinates (center-origin) to COCO coordinates (top-left origin)
+        // In Bevy: (0,0) is at center, +Y is up, +X is right
+        // In COCO: (0,0) is at top-left, +Y is down, +X is right
+        
+        // Transform X: add half image width to shift origin from center to left edge
+        let coco_min_x = min_x + (img_width / 2.0);
+        let coco_max_x = max_x + (img_width / 2.0);
+        
+        // Transform Y: flip Y axis and shift origin from center to top edge
+        // Bevy Y increases upward, COCO Y increases downward
+        let coco_min_y = (img_height / 2.0) - max_y;  // max_y in Bevy becomes min_y in COCO
+        let coco_max_y = (img_height / 2.0) - min_y;  // min_y in Bevy becomes max_y in COCO
+        
+        // Calculate width and height
+        let width = coco_max_x - coco_min_x;
+        let height = coco_max_y - coco_min_y;
+        
+        // Ensure coordinates are non-negative
+        if coco_min_x < 0.0 || coco_min_y < 0.0 {
+            warn!("Skipping annotation with negative coordinates: x={}, y={}", coco_min_x, coco_min_y);
+            continue;
+        }
+        
+        let area = width * height;
+        
+        annotations.push(CreateAnnotationRequest {
+            category_id,
+            bbox: vec![coco_min_x as f64, coco_min_y as f64, width as f64, height as f64],
+            area: Some(area as f64),
+            iscrowd: Some(false),
+            metadata: Some(serde_json::json!({
+                "class": rect.class,
+                "app_generated": true,
+                "category_mapped_from_class": rect.class
+            })),
+        });
+    }
+    
+    annotations
+}
+
+pub fn render_side_panels_with_annotations(
     contexts: &mut EguiContexts,
     rectangles: &mut Vec<Rectangle>,
     selected_index: &mut Option<usize>,
+    annotation_state: &AnnotationState,
+    auth_state: &AuthState,
+    user_state: &UserState,
+    projects_state: &ProjectsState,
+    save_events: &mut EventWriter<SaveAnnotationEvent>,
+    load_events: &mut EventWriter<LoadAnnotationEvent>,
+    _create_category_events: &mut EventWriter<CreateCategoryEvent>,
+    image_dimensions: Vec2,
 ) {
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(250.0)
         .width_range(80.0..=500.0)
         .show(contexts.ctx_mut(), |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading("Left Panel");
-            });
+            render_annotation_controls(
+                ui,
+                rectangles,
+                annotation_state,
+                auth_state,
+                user_state,
+                projects_state,
+                save_events,
+                load_events,
+                _create_category_events,
+                image_dimensions,
+            );
         });
 
     egui::SidePanel::right("right_panel")
@@ -262,6 +479,7 @@ pub fn render_side_panels(
             });
         });
 }
+
 
 #[allow(clippy::ptr_arg)]
 pub fn render_rectangle_editor_window(
