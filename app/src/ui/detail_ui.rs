@@ -2,9 +2,8 @@ use bevy::prelude::*;
 use bevy_egui::egui::scroll_area::ScrollBarVisibility;
 use bevy_egui::{EguiContexts, egui};
 use crate::core::rectangle::{Rectangle, rect_color};
-use crate::annotations::{
-    AnnotationState, SaveAnnotationEvent, LoadAnnotationEvent, CreateCategoryEvent,
-    CreateAnnotationRequest, AnnotationCategory,
+use crate::pages::detail::{
+    AnnotationState, CreateAnnotationRequest, AnnotationCategory, annotation_client,
 };
 use crate::auth::{AuthState, UserState, ProjectsState};
 
@@ -233,16 +232,15 @@ pub fn render_rectangle_editor(
 
 pub fn render_annotation_controls(
     ui: &mut egui::Ui,
-    rectangles: &Vec<Rectangle>,
-    annotation_state: &AnnotationState,
+    rectangles: &mut Vec<Rectangle>,
+    annotation_state: &mut AnnotationState,
     auth_state: &AuthState,
     _user_state: &UserState,
     _projects_state: &ProjectsState,
-    save_events: &mut EventWriter<SaveAnnotationEvent>,
-    load_events: &mut EventWriter<LoadAnnotationEvent>,
-    _create_category_events: &mut EventWriter<CreateCategoryEvent>,
     image_dimensions: Vec2,
-) {
+) -> Option<Vec<crate::pages::detail::AnnotationWithCategory>> {
+    let mut loaded_annotations = None;
+    
     ui.group(|ui| {
         ui.vertical_centered(|ui| {
             ui.heading("Annotations");
@@ -326,13 +324,18 @@ pub fn render_annotation_controls(
             if ui.button("💾 Save Annotations").clicked() {
                 if let Some(token) = &auth_state.jwt {
                     if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
+                        annotation_state.is_saving = true;
                         let annotations = convert_rectangles_to_annotations(rectangles, &annotation_state.categories, image_dimensions);
-                        save_events.write(SaveAnnotationEvent {
-                            project_id,
-                            task_id,
-                            annotations,
-                            token: token.clone(),
-                        });
+                        match annotation_client::save_annotations(project_id, task_id, annotations, token.clone()) {
+                            Ok(saved_annotations) => {
+                                annotation_state.is_saving = false;
+                                info!("Annotations saved successfully: {} annotations", saved_annotations.len());
+                            }
+                            Err(error) => {
+                                annotation_state.is_saving = false;
+                                error!("Failed to save annotations: {}", error);
+                            }
+                        }
                     }
                 }
             }
@@ -340,11 +343,15 @@ pub fn render_annotation_controls(
             if ui.button("📁 Load Annotations").clicked() {
                 if let Some(token) = &auth_state.jwt {
                     if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
-                        load_events.write(LoadAnnotationEvent {
-                            project_id,
-                            task_id,
-                            token: token.clone(),
-                        });
+                        match annotation_client::load_annotations(project_id, task_id, token.clone()) {
+                            Ok(annotations) => {
+                                info!("Annotations loaded: {} annotations", annotations.len());
+                                loaded_annotations = Some(annotations);
+                            }
+                            Err(error) => {
+                                error!("Failed to load annotations: {}", error);
+                            }
+                        }
                     }
                 }
             }
@@ -354,6 +361,8 @@ pub fn render_annotation_controls(
             ui.label("⏳ Saving annotations...");
         }
     });
+    
+    loaded_annotations
 }
 
 fn convert_rectangles_to_annotations(rectangles: &[Rectangle], categories: &[AnnotationCategory], image_dimensions: Vec2) -> Vec<CreateAnnotationRequest> {
@@ -429,16 +438,13 @@ pub fn render_side_panels_with_annotations(
     contexts: &mut EguiContexts,
     rectangles: &mut Vec<Rectangle>,
     selected_index: &mut Option<usize>,
-    annotation_state: &AnnotationState,
+    annotation_state: &mut AnnotationState,
     auth_state: &AuthState,
     user_state: &UserState,
     projects_state: &ProjectsState,
-    save_events: &mut EventWriter<SaveAnnotationEvent>,
-    load_events: &mut EventWriter<LoadAnnotationEvent>,
-    _create_category_events: &mut EventWriter<CreateCategoryEvent>,
     image_dimensions: Vec2,
-) {
-    egui::SidePanel::left("left_panel")
+) -> Option<Vec<crate::pages::detail::AnnotationWithCategory>> {
+    let loaded_annotations = egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(250.0)
         .width_range(80.0..=500.0)
@@ -450,12 +456,9 @@ pub fn render_side_panels_with_annotations(
                 auth_state,
                 user_state,
                 projects_state,
-                save_events,
-                load_events,
-                _create_category_events,
                 image_dimensions,
-            );
-        });
+            )
+        }).inner;
 
     egui::SidePanel::right("right_panel")
         .resizable(true)
@@ -478,6 +481,8 @@ pub fn render_side_panels_with_annotations(
                 ui.separator();
             });
         });
+    
+    loaded_annotations
 }
 
 

@@ -2,13 +2,12 @@ use crate::ui::components::egui_common;
 use crate::app::state::AppState;
 use crate::auth::{AuthState, ProjectsState};
 use crate::sync::{SyncState, SyncRequestEvent, SyncRequest, SyncCompletedEvent, SyncErrorEvent};
-use crate::annotations::{
-    AnnotationState, CreateCategoryEvent, CreateCategoryRequest,
-    LoadCategoriesEvent, CategoryCreatedEvent, AnnotationErrorEvent,
-};
+use crate::api::categories::{CategoriesApi, AnnotationCategory, CreateCategoryRequest};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiContextPass, egui};
 use uuid::Uuid;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Mutex;
 
 #[derive(Resource, Default)]
 pub struct Parameters {
@@ -71,11 +70,55 @@ pub struct ProjectSettingsPageData {
     pub category_error: Option<String>,
 }
 
+// Category management structures
+#[derive(Resource, Default)]
+pub struct CategoryState {
+    pub categories: Vec<AnnotationCategory>,
+    pub current_project_id: Option<Uuid>,
+}
+
+#[derive(Resource)]
+struct CategoryChannelSender(Mutex<Sender<CategoryResult>>);
+
+#[derive(Resource)]
+struct CategoryChannelReceiver(Mutex<Receiver<CategoryResult>>);
+
+// Types are now imported from API modules
+
+enum CategoryResult {
+    CategoriesLoaded { categories: Vec<AnnotationCategory> },
+    CategoryCreated { category: AnnotationCategory },
+    Error { error: String },
+}
+
+#[derive(Event)]
+pub struct LoadCategoriesEvent {
+    pub project_id: Uuid,
+    pub token: String,
+}
+
+#[derive(Event)]
+pub struct CreateCategoryEvent {
+    pub project_id: Uuid,
+    pub request: CreateCategoryRequest,
+    pub token: String,
+}
+
+#[derive(Event)]
+pub struct CategoryCreatedEvent {
+    pub category: AnnotationCategory,
+}
+
+#[derive(Event)]
+pub struct CategoryErrorEvent {
+    pub error: String,
+}
+
 pub fn setup(
     mut commands: Commands,
     projects_state: Res<ProjectsState>,
     parameters: Option<Res<Parameters>>,
-    mut annotation_state: ResMut<AnnotationState>,
+    mut category_state: ResMut<CategoryState>,
     mut load_categories_events: EventWriter<LoadCategoriesEvent>,
     auth_state: Res<AuthState>,
 ) {
@@ -120,7 +163,7 @@ pub fn setup(
     // Load categories for the selected project
     if let (Some(project_id_str), Some(token)) = (selected_project_id, auth_state.get_jwt()) {
         if let Ok(project_uuid) = Uuid::parse_str(&project_id_str) {
-            annotation_state.current_project_id = Some(project_uuid);
+            category_state.current_project_id = Some(project_uuid);
             // Load categories for this project
             load_categories_events.write(LoadCategoriesEvent {
                 project_id: project_uuid,
@@ -268,7 +311,7 @@ pub fn ui_system(
     projects_state: Res<ProjectsState>,
     auth_state: Res<AuthState>,
     sync_state: Res<SyncState>,
-    annotation_state: Res<AnnotationState>,
+    category_state: Res<CategoryState>,
     mut sync_request_events: EventWriter<SyncRequestEvent>,
     mut create_category_events: EventWriter<CreateCategoryEvent>,
 ) {
@@ -683,10 +726,10 @@ pub fn ui_system(
                         ui.label("Existing Categories:");
                         ui.add_space(5.0);
                         
-                        if annotation_state.categories.is_empty() {
+                        if category_state.categories.is_empty() {
                             ui.colored_label(egui::Color32::GRAY, "No categories created yet.");
                         } else {
-                            for category in &annotation_state.categories {
+                            for category in &category_state.categories {
                                 ui.horizontal(|ui| {
                                     // Color indicator
                                     if let Some(color) = &category.color {
@@ -944,10 +987,10 @@ pub fn handle_save_project_task(
     }
 }
 
-pub fn handle_category_events(
+pub fn handle_legacy_category_events(
     mut page_data: ResMut<ProjectSettingsPageData>,
     mut category_created_events: EventReader<CategoryCreatedEvent>,
-    mut annotation_error_events: EventReader<AnnotationErrorEvent>,
+    mut category_error_events: EventReader<CategoryErrorEvent>,
 ) {
     for event in category_created_events.read() {
         info!("Category created: {}", event.category.name);
@@ -959,7 +1002,7 @@ pub fn handle_category_events(
         page_data.new_category_description.clear();
     }
     
-    for event in annotation_error_events.read() {
+    for event in category_error_events.read() {
         error!("Category creation error: {}", event.error);
         page_data.is_creating_category = false;
         page_data.category_error = Some(event.error.clone());
@@ -1079,18 +1122,148 @@ pub fn handle_save_storage_config_task(
     }
 }
 
+// Adapter functions using new API modules
+mod category_client {
+    use super::*;
+
+    pub async fn load_categories(
+        project_id: Uuid,
+        token: String,
+        _api_base_url: String,
+    ) -> Result<Vec<AnnotationCategory>, String> {
+        let categories_api = CategoriesApi::new();
+        categories_api.list_categories(&token, project_id).await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn create_category(
+        project_id: Uuid,
+        request: CreateCategoryRequest,
+        token: String,
+        _api_base_url: String,
+    ) -> Result<AnnotationCategory, String> {
+        let categories_api = CategoriesApi::new();
+        categories_api.create_category(&token, project_id, &request).await
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn handle_category_requests(
+    mut load_categories_events: EventReader<LoadCategoriesEvent>,
+    mut create_category_events: EventReader<CreateCategoryEvent>,
+    sender: Res<CategoryChannelSender>,
+) {
+    for load_categories_event in load_categories_events.read() {
+        let project_id = load_categories_event.project_id;
+        let token = load_categories_event.token.clone();
+        let api_base_url = std::env::var("API_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        
+        if let Ok(tx) = sender.0.lock() {
+            let tx = tx.clone();
+            
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let result = category_client::load_categories(project_id, token, api_base_url).await;
+                    match result {
+                        Ok(categories) => {
+                            let _ = tx.send(CategoryResult::CategoriesLoaded { categories });
+                        }
+                        Err(error) => {
+                            let _ = tx.send(CategoryResult::Error { error });
+                        }
+                    }
+                });
+            });
+        }
+    }
+
+    for create_event in create_category_events.read() {
+        let project_id = create_event.project_id;
+        let request = create_event.request.clone();
+        let token = create_event.token.clone();
+        let api_base_url = std::env::var("API_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:8080".to_string());
+        
+        if let Ok(tx) = sender.0.lock() {
+            let tx = tx.clone();
+            
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                runtime.block_on(async {
+                    let result = category_client::create_category(project_id, request, token, api_base_url).await;
+                    match result {
+                        Ok(category) => {
+                            let _ = tx.send(CategoryResult::CategoryCreated { category });
+                        }
+                        Err(error) => {
+                            let _ = tx.send(CategoryResult::Error { error });
+                        }
+                    }
+                });
+            });
+        }
+    }
+}
+
+fn process_category_results(
+    receiver: Res<CategoryChannelReceiver>,
+    mut category_state: ResMut<CategoryState>,
+    mut category_created_events: EventWriter<CategoryCreatedEvent>,
+    mut error_events: EventWriter<CategoryErrorEvent>,
+    mut page_data: ResMut<ProjectSettingsPageData>,
+) {
+    if let Ok(rx) = receiver.0.lock() {
+        while let Ok(result) = rx.try_recv() {
+            match result {
+                CategoryResult::CategoriesLoaded { categories } => {
+                    category_state.categories = categories;
+                }
+                CategoryResult::CategoryCreated { category } => {
+                    category_state.categories.push(category.clone());
+                    category_created_events.write(CategoryCreatedEvent { category });
+                    // Reset the form
+                    page_data.new_category_name.clear();
+                    page_data.new_category_description.clear();
+                    page_data.new_category_color = [1.0, 0.0, 0.0];
+                    page_data.is_creating_category = false;
+                    page_data.category_error = None;
+                }
+                CategoryResult::Error { error } => {
+                    error_events.write(CategoryErrorEvent { error: error.clone() });
+                    page_data.category_error = Some(error);
+                    page_data.is_creating_category = false;
+                }
+            }
+        }
+    }
+}
+
+
 pub struct ProjectSettingsPlugin;
 
 impl Plugin for ProjectSettingsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::ProjectSettings), setup)
+        let (tx, rx) = channel::<CategoryResult>();
+        
+        app.init_resource::<CategoryState>()
+           .insert_resource(CategoryChannelSender(Mutex::new(tx)))
+           .insert_resource(CategoryChannelReceiver(Mutex::new(rx)))
+           .add_event::<LoadCategoriesEvent>()
+           .add_event::<CreateCategoryEvent>()
+           .add_event::<CategoryCreatedEvent>()
+           .add_event::<CategoryErrorEvent>()
+           .add_systems(OnEnter(AppState::ProjectSettings), setup)
            .add_systems(Update, (
                update,
                handle_save_project_task,
                handle_delete_project_task,
                handle_save_storage_config_task,
                handle_sync_events,
-               handle_category_events,
+               handle_legacy_category_events,
+               handle_category_requests,
+               process_category_results,
            ).run_if(in_state(AppState::ProjectSettings)))
            .add_systems(
                EguiContextPass,

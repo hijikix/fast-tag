@@ -1,41 +1,18 @@
 use bevy::prelude::*;
 use bevy::asset::RenderAssetUsages;
+use crate::api::resources::ResourcesApi;
 
 pub async fn download_image_bytes(url: &str) -> Option<Vec<u8>> {
     println!("Downloading from URL: {}", url);
     
-    let response = match reqwest::get(url).await {
-        Ok(response) => {
-            println!("HTTP response status: {}", response.status());
-            if !response.status().is_success() {
-                eprintln!("HTTP error: {}", response.status());
-                return None;
-            }
-            response
+    let resources_api = ResourcesApi::new();
+    match resources_api.download_image(url).await {
+        Ok(bytes) => {
+            println!("Successfully downloaded {} bytes", bytes.len());
+            Some(bytes)
         },
         Err(e) => {
             eprintln!("Image download error: {}", e);
-            return None;
-        }
-    };
-
-    // Check content type
-    if let Some(content_type) = response.headers().get("content-type") {
-        if let Ok(content_type_str) = content_type.to_str() {
-            println!("Content-Type: {}", content_type_str);
-            if !content_type_str.starts_with("image/") {
-                eprintln!("Warning: Content-Type is not an image type: {}", content_type_str);
-            }
-        }
-    }
-
-    match response.bytes().await {
-        Ok(bytes) => {
-            println!("Successfully downloaded {} bytes", bytes.len());
-            Some(bytes.to_vec())
-        },
-        Err(e) => {
-            eprintln!("Image bytes error: {}", e);
             None
         }
     }

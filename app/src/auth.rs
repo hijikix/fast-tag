@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
+use crate::api::{auth::AuthApi, projects::ProjectsApi, tasks::TasksApi};
 
 #[derive(Resource, Default)]
 pub struct AuthState {
@@ -25,27 +25,8 @@ impl AuthState {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct User {
-    #[allow(dead_code)]
-    pub id: String,
-    #[allow(dead_code)]
-    pub email: String,
-    #[allow(dead_code)]
-    pub name: String,
-    #[allow(dead_code)]
-    pub avatar_url: Option<String>,
-    #[allow(dead_code)]
-    pub provider: String,
-    #[allow(dead_code)]
-    pub provider_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UserInfoResponse {
-    #[allow(dead_code)]
-    pub user: User,
-}
+// Re-export types from API modules
+pub use crate::api::auth::User;
 
 #[derive(Resource, Default)]
 pub struct UserState {
@@ -83,65 +64,12 @@ impl UserState {
 
 #[allow(dead_code)]
 pub async fn fetch_user_info(jwt: &str) -> Result<User, String> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get("http://localhost:8080/me")
-        .bearer_auth(jwt)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status().is_success() {
-        let user_info: UserInfoResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-        Ok(user_info.user)
-    } else {
-        Err(format!("API error: {}", response.status()))
-    }
+    let auth_api = AuthApi::new();
+    auth_api.get_user_info(jwt).await.map_err(|e| e.to_string())
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct Project {
-    #[allow(dead_code)]
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    #[allow(dead_code)]
-    pub owner_id: String,
-    pub storage_config: Option<serde_json::Value>,
-    pub created_at: String,
-    #[allow(dead_code)]
-    pub updated_at: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ProjectsListResponse {
-    pub projects: Vec<Project>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateProjectRequest {
-    pub name: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct UpdateProjectRequest {
-    pub name: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct UpdateStorageConfigRequest {
-    pub storage_config: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ProjectResponse {
-    pub project: Project,
-}
+// Re-export types from API modules
+pub use crate::api::projects::Project;
 
 #[derive(Resource, Default)]
 pub struct ProjectsState {
@@ -180,216 +108,37 @@ impl ProjectsState {
 }
 
 pub async fn fetch_projects(jwt: &str) -> Result<Vec<Project>, String> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get("http://localhost:8080/projects")
-        .bearer_auth(jwt)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status().is_success() {
-        let projects_response: ProjectsListResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-        Ok(projects_response.projects)
-    } else {
-        Err(format!("API error: {}", response.status()))
-    }
+    let projects_api = ProjectsApi::new();
+    projects_api.list_projects(jwt).await.map_err(|e| e.to_string())
 }
 
 pub async fn create_project(jwt: &str, name: &str, description: Option<&str>) -> Result<Project, String> {
-    let client = reqwest::Client::new();
-    let request_body = CreateProjectRequest {
-        name: name.to_string(),
-        description: description.map(|s| s.to_string()),
-    };
-    
-    let response = client
-        .post("http://localhost:8080/projects")
-        .bearer_auth(jwt)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status().is_success() {
-        let project_response: ProjectResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-        Ok(project_response.project)
-    } else {
-        Err(format!("API error: {}", response.status()))
-    }
+    let projects_api = ProjectsApi::new();
+    projects_api.create_project(jwt, name, description).await.map_err(|e| e.to_string())
 }
 
 pub async fn update_project(jwt: &str, project_id: &str, name: &str, description: Option<&str>) -> Result<Project, String> {
-    let client = reqwest::Client::new();
-    let request_body = UpdateProjectRequest {
-        name: name.to_string(),
-        description: description.map(|s| s.to_string()),
-    };
-    
-    let response = client
-        .put(format!("http://localhost:8080/projects/{}", project_id))
-        .bearer_auth(jwt)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status().is_success() {
-        let project_response: ProjectResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-        Ok(project_response.project)
-    } else {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        Err(format!("API error: {}", error_text))
-    }
+    let projects_api = ProjectsApi::new();
+    projects_api.update_project(jwt, project_id, name, description).await.map_err(|e| e.to_string())
 }
 
 pub async fn delete_project(jwt: &str, project_id: &str) -> Result<(), String> {
-    let client = reqwest::Client::new();
-    
-    let response = client
-        .delete(format!("http://localhost:8080/projects/{}", project_id))
-        .bearer_auth(jwt)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status().is_success() {
-        Ok(())
-    } else {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        Err(format!("API error: {}", error_text))
-    }
+    let projects_api = ProjectsApi::new();
+    projects_api.delete_project(jwt, project_id).await.map_err(|e| e.to_string())
 }
 
 pub async fn update_project_storage_config(jwt: &str, project_id: &str, storage_config: serde_json::Value) -> Result<Project, String> {
-    let client = reqwest::Client::new();
-    let request_body = UpdateStorageConfigRequest {
-        storage_config,
-    };
-    
-    let response = client
-        .put(format!("http://localhost:8080/projects/{}/storage-config", project_id))
-        .bearer_auth(jwt)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status().is_success() {
-        let project_response: ProjectResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-        Ok(project_response.project)
-    } else {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        Err(format!("API error: {}", error_text))
-    }
+    let projects_api = ProjectsApi::new();
+    projects_api.update_storage_config(jwt, project_id, storage_config).await.map_err(|e| e.to_string())
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct Task {
-    #[allow(dead_code)]
-    pub id: String,
-    #[allow(dead_code)]
-    pub project_id: String,
-    pub name: String,
-    pub resource_url: Option<String>,
-    pub status: String,
-    pub created_at: String,
-    #[allow(dead_code)]
-    pub updated_at: String,
-    #[allow(dead_code)]
-    pub completed_at: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct TaskWithResolvedUrl {
-    #[serde(flatten)]
-    pub task: Task,
-    pub resolved_resource_url: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TasksListResponse {
-    pub tasks: Vec<TaskWithResolvedUrl>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateTaskRequest {
-    pub name: String,
-    pub resource_url: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct UpdateTaskRequest {
-    pub name: String,
-    pub resource_url: Option<String>,
-    pub status: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TaskResponse {
-    #[allow(dead_code)]
-    pub task: Task,
-    #[allow(dead_code)]
-    pub resolved_resource_url: Option<String>,
-}
+// Re-export types from API modules
+pub use crate::api::tasks::{Task, TaskWithResolvedUrl};
 
 
-pub async fn fetch_tasks(jwt: &str, project_id: &str) -> Result<Vec<TaskWithResolvedUrl>, String> {
-    let client = reqwest::Client::new();
-    let response = client
-        .get(format!("http://localhost:8080/projects/{}/tasks", project_id))
-        .bearer_auth(jwt)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status().is_success() {
-        let tasks_response: TasksListResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-        Ok(tasks_response.tasks)
-    } else {
-        Err(format!("API error: {}", response.status()))
-    }
-}
 
 #[allow(dead_code)]
 pub async fn create_task(jwt: &str, project_id: &str, name: &str, resource_url: Option<&str>) -> Result<Task, String> {
-    let client = reqwest::Client::new();
-    let request_body = CreateTaskRequest {
-        name: name.to_string(),
-        resource_url: resource_url.map(|s| s.to_string()),
-    };
-    
-    let response = client
-        .post(format!("http://localhost:8080/projects/{}/tasks", project_id))
-        .bearer_auth(jwt)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    if response.status().is_success() {
-        let task_response: TaskResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
-        Ok(task_response.task)
-    } else {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        Err(format!("API error: {}", error_text))
-    }
+    let tasks_api = TasksApi::new();
+    tasks_api.create_task(jwt, project_id, name, resource_url).await.map_err(|e| e.to_string())
 }

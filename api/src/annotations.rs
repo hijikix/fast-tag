@@ -32,10 +32,19 @@ pub struct ImageAnnotation {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AnnotationWithCategory {
-    #[serde(flatten)]
-    pub annotation: Annotation,
-    #[serde(flatten)]
-    pub image_annotation: ImageAnnotation,
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub metadata: serde_json::Value,
+    pub annotated_by: Option<Uuid>,
+    pub annotated_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub annotation_id: Uuid,
+    pub category_id: Option<Uuid>,
+    pub bbox: Vec<f64>,
+    pub area: Option<f64>,
+    pub iscrowd: bool,
+    pub image_metadata: serde_json::Value,
     pub category_name: String,
     pub category_color: Option<String>,
 }
@@ -440,8 +449,19 @@ pub async fn create_annotation_in_db(
     .await?;
 
     Ok(AnnotationWithCategory {
-        annotation,
-        image_annotation,
+        id: image_annotation.id,
+        task_id: annotation.task_id,
+        metadata: annotation.metadata,
+        annotated_by: annotation.annotated_by,
+        annotated_at: annotation.annotated_at,
+        created_at: annotation.created_at,
+        updated_at: annotation.updated_at,
+        annotation_id: annotation.id,
+        category_id: image_annotation.category_id,
+        bbox: image_annotation.bbox,
+        area: image_annotation.area,
+        iscrowd: image_annotation.iscrowd,
+        image_metadata: image_annotation.image_metadata,
         category_name: category.name,
         category_color: category.color,
     })
@@ -494,8 +514,19 @@ async fn get_task_annotations(
         };
 
         result.push(AnnotationWithCategory {
-            annotation,
-            image_annotation,
+            id: image_annotation.id,
+            task_id: annotation.task_id,
+            metadata: annotation.metadata,
+            annotated_by: annotation.annotated_by,
+            annotated_at: annotation.annotated_at,
+            created_at: annotation.created_at,
+            updated_at: annotation.updated_at,
+            annotation_id: annotation.id,
+            category_id: image_annotation.category_id,
+            bbox: image_annotation.bbox,
+            area: image_annotation.area,
+            iscrowd: image_annotation.iscrowd,
+            image_metadata: image_annotation.image_metadata,
             category_name: row.category_name.unwrap_or("Unknown".to_string()),
             category_color: row.category_color,
         });
@@ -553,8 +584,19 @@ async fn get_annotation_by_id(
     };
 
     Ok(Some(AnnotationWithCategory {
-        annotation,
-        image_annotation,
+        id: image_annotation.id,
+        task_id: annotation.task_id,
+        metadata: annotation.metadata,
+        annotated_by: annotation.annotated_by,
+        annotated_at: annotation.annotated_at,
+        created_at: annotation.created_at,
+        updated_at: annotation.updated_at,
+        annotation_id: annotation.id,
+        category_id: image_annotation.category_id,
+        bbox: image_annotation.bbox,
+        area: image_annotation.area,
+        iscrowd: image_annotation.iscrowd,
+        image_metadata: image_annotation.image_metadata,
         category_name: row.category_name.unwrap_or("Unknown".to_string()),
         category_color: row.category_color,
     }))
@@ -627,8 +669,19 @@ async fn update_annotation_in_db(
     };
 
     Ok(Some(AnnotationWithCategory {
-        annotation,
-        image_annotation,
+        id: image_annotation.id,
+        task_id: annotation.task_id,
+        metadata: annotation.metadata,
+        annotated_by: annotation.annotated_by,
+        annotated_at: annotation.annotated_at,
+        created_at: annotation.created_at,
+        updated_at: annotation.updated_at,
+        annotation_id: annotation.id,
+        category_id: image_annotation.category_id,
+        bbox: image_annotation.bbox,
+        area: image_annotation.area,
+        iscrowd: image_annotation.iscrowd,
+        image_metadata: image_annotation.image_metadata,
         category_name,
         category_color,
     }))
@@ -926,7 +979,7 @@ mod tests {
         ).await;
 
         let req = test::TestRequest::get()
-            .uri(&format!("/projects/{}/tasks/{}/annotations/{}", project.id, task.id, annotation.annotation.id))
+            .uri(&format!("/projects/{}/tasks/{}/annotations/{}", project.id, task.id, annotation.annotation_id))
             .insert_header(("Authorization", format!("Bearer {}", token)))
             .to_request();
 
@@ -970,7 +1023,7 @@ mod tests {
         };
 
         let req = test::TestRequest::put()
-            .uri(&format!("/projects/{}/tasks/{}/annotations/{}", project.id, task.id, annotation.annotation.id))
+            .uri(&format!("/projects/{}/tasks/{}/annotations/{}", project.id, task.id, annotation.annotation_id))
             .insert_header(("Authorization", format!("Bearer {}", token)))
             .set_json(update_request)
             .to_request();
@@ -1008,7 +1061,7 @@ mod tests {
         ).await;
 
         let req = test::TestRequest::delete()
-            .uri(&format!("/projects/{}/tasks/{}/annotations/{}", project.id, task.id, annotation.annotation.id))
+            .uri(&format!("/projects/{}/tasks/{}/annotations/{}", project.id, task.id, annotation.annotation_id))
             .insert_header(("Authorization", format!("Bearer {}", token)))
             .to_request();
 
