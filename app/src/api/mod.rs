@@ -6,6 +6,7 @@ pub mod annotations;
 pub mod categories;
 pub mod sync;
 pub mod resources;
+pub mod export;
 
 use std::fmt;
 

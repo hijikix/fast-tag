@@ -5,6 +5,7 @@ use crate::sync::{SyncState, SyncRequestEvent, SyncRequest, SyncCompletedEvent, 
 use crate::api::categories::{CategoriesApi, AnnotationCategory, CreateCategoryRequest};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiContextPass, egui};
+use rfd::FileDialog;
 use uuid::Uuid;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
@@ -30,6 +31,20 @@ pub struct DeleteProjectTask {
 pub struct SaveStorageConfigTask {
     pub project_id: String,
     pub storage_config: serde_json::Value,
+}
+
+#[derive(Component)]
+pub struct DownloadCocoExportTask {
+    pub project_id: String,
+    pub token: String,
+    pub file_path: Option<String>,
+}
+
+#[derive(Component)]
+pub struct SelectFilePathTask {
+    pub project_id: String,
+    pub token: String,
+    pub filename: String,
 }
 
 #[derive(Resource, Default)]
@@ -68,6 +83,9 @@ pub struct ProjectSettingsPageData {
     pub new_category_description: String,
     pub is_creating_category: bool,
     pub category_error: Option<String>,
+    // Export fields
+    pub is_exporting_coco: bool,
+    pub export_error: Option<String>,
 }
 
 // Category management structures
@@ -324,6 +342,8 @@ pub fn ui_system(
             ui.heading("Project Settings");
             ui.add_space(10.0);
         });
+        
+        egui::ScrollArea::vertical().show(ui, |ui| {
 
         if projects_state.projects.is_empty() {
             ui.vertical_centered(|ui| {
@@ -841,6 +861,54 @@ pub fn ui_system(
                 
                 ui.add_space(20.0);
                 
+                // Export section
+                ui.group(|ui| {
+                    ui.vertical(|ui| {
+                        ui.strong("Export Data");
+                        ui.separator();
+                        ui.add_space(10.0);
+                        
+                        ui.label("Download annotation data in various formats:");
+                        ui.add_space(5.0);
+                        
+                        ui.horizontal(|ui| {
+                            let can_export = !page_data.is_exporting_coco;
+                            if ui.add_enabled(can_export, egui::Button::new("📥 Download COCO Format")).clicked() {
+                                // Trigger file dialog for COCO export
+                                if let Some(token) = auth_state.get_jwt() {
+                                    if let Some(project_id_str) = page_data.selected_project_id.clone() {
+                                        page_data.is_exporting_coco = true;
+                                        page_data.export_error = None;
+                                        
+                                        // Spawn the file dialog task
+                                        let filename = format!("coco_export_{}.json", chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+                                        commands.spawn(SelectFilePathTask {
+                                            project_id: project_id_str,
+                                            token: token.clone(),
+                                            filename,
+                                        });
+                                    }
+                                }
+                            }
+                            
+                            if page_data.is_exporting_coco {
+                                ui.add(egui::Spinner::new());
+                                ui.label("Downloading...");
+                            } else {
+                                ui.label("Export annotations in COCO format (JSON)");
+                            }
+                        });
+                        
+                        // Show export error
+                        if let Some(error) = &page_data.export_error {
+                            ui.add_space(5.0);
+                            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+                        }
+                    });
+                });
+                
+                ui.add_space(20.0);
+                
                 // Danger zone
                 ui.group(|ui| {
                     ui.vertical(|ui| {
@@ -857,6 +925,7 @@ pub fn ui_system(
                 });
             }
         }
+        });
     });
     
     // Delete confirmation dialog
@@ -1122,6 +1191,80 @@ pub fn handle_save_storage_config_task(
     }
 }
 
+pub fn handle_download_coco_export_task(
+    mut commands: Commands,
+    mut page_data: ResMut<ProjectSettingsPageData>,
+    mut download_tasks: Query<(Entity, &DownloadCocoExportTask)>,
+) {
+    use crate::api::export::ExportApi;
+    
+    for (entity, task) in download_tasks.iter_mut() {
+        info!("Starting COCO export download for project: {}", task.project_id);
+        let project_id = task.project_id.clone();
+        let token = task.token.clone();
+        
+        // Parse project ID
+        if let Ok(project_uuid) = Uuid::parse_str(&project_id) {
+            info!("Parsed project UUID: {}", project_uuid);
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            info!("Created Tokio runtime for COCO export download");
+            
+            match rt.block_on(async {
+                let export_api = ExportApi::new();
+                export_api.download_coco_export(&token, project_uuid).await
+            }) {
+                Ok(data) => {
+                    info!("COCO export download completed successfully, data size: {} bytes", data.len());
+                    
+                    // Create a filename
+                    let filename = format!("coco_export_{}.json", chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+                    info!("Generated filename for COCO export: {}", filename);
+                    
+                    // Save to Downloads folder (fallback since native dialog is problematic)
+                    info!("Saving COCO export to Downloads folder");
+                    
+                    let downloads_path = dirs::download_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join(&filename);
+                    
+                    info!("Saving to path: {:?}", downloads_path);
+                    
+                    // Check if a custom file path was provided
+                    let save_path = if let Some(file_path) = &task.file_path {
+                        std::path::PathBuf::from(file_path)
+                    } else {
+                        downloads_path
+                    };
+                    
+                    match std::fs::write(&save_path, &data) {
+                        Ok(_) => {
+                            info!("COCO export saved successfully to: {:?}", save_path);
+                            page_data.is_exporting_coco = false;
+                            page_data.export_error = None;
+                        }
+                        Err(e) => {
+                            error!("Failed to save COCO export file to {:?}: {}", save_path, e);
+                            page_data.is_exporting_coco = false;
+                            page_data.export_error = Some(format!("Failed to save file: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to download COCO export for project {}: {}", project_uuid, e);
+                    page_data.is_exporting_coco = false;
+                    page_data.export_error = Some(format!("Failed to download: {}", e));
+                }
+            }
+        } else {
+            error!("Failed to parse project ID as UUID: {}", project_id);
+            page_data.is_exporting_coco = false;
+            page_data.export_error = Some("Invalid project ID".to_string());
+        }
+        
+        commands.entity(entity).despawn();
+    }
+}
+
 // Adapter functions using new API modules
 mod category_client {
     use super::*;
@@ -1241,6 +1384,64 @@ fn process_category_results(
 }
 
 
+pub fn handle_select_file_path_task(
+    mut commands: Commands,
+    mut page_data: ResMut<ProjectSettingsPageData>,
+    mut select_tasks: Query<(Entity, &SelectFilePathTask)>,
+) {
+    for (entity, task) in select_tasks.iter_mut() {
+        // Open the file save dialog
+        let project_id = task.project_id.clone();
+        let token = task.token.clone();
+        let filename = task.filename.clone();
+        
+        // Use a non-blocking approach by spawning a thread
+        std::thread::spawn(move || {
+            let file_path = FileDialog::new()
+                .set_file_name(&filename)
+                .add_filter("JSON", &["json"])
+                .save_file();
+            
+            if let Some(path) = file_path {
+                let path_str = path.to_str().unwrap_or("").to_string();
+                info!("User selected file path: {}", path_str);
+                
+                // We need to communicate back to the main thread
+                // For now, we'll use the blocking approach
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    use crate::api::export::ExportApi;
+                    
+                    if let Ok(project_uuid) = Uuid::parse_str(&project_id) {
+                        let export_api = ExportApi::new();
+                        match export_api.download_coco_export(&token, project_uuid).await {
+                            Ok(data) => {
+                                match std::fs::write(&path, &data) {
+                                    Ok(_) => {
+                                        info!("COCO export saved successfully to: {:?}", path);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to save COCO export file: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to download COCO export: {}", e);
+                            }
+                        }
+                    }
+                });
+            } else {
+                info!("File save dialog canceled");
+            }
+        });
+        
+        // Mark as not exporting after spawning the thread
+        page_data.is_exporting_coco = false;
+        commands.entity(entity).despawn();
+    }
+}
+
 pub struct ProjectSettingsPlugin;
 
 impl Plugin for ProjectSettingsPlugin {
@@ -1260,6 +1461,8 @@ impl Plugin for ProjectSettingsPlugin {
                handle_save_project_task,
                handle_delete_project_task,
                handle_save_storage_config_task,
+               handle_select_file_path_task,
+               handle_download_coco_export_task,
                handle_sync_events,
                handle_legacy_category_events,
                handle_category_requests,
