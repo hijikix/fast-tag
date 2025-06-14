@@ -47,6 +47,13 @@ pub struct SelectFilePathTask {
     pub filename: String,
 }
 
+#[derive(Component)]
+pub struct ImportCocoTask {
+    pub project_id: String,
+    pub token: String,
+    pub file_path: String,
+}
+
 #[derive(Resource, Default)]
 pub struct ProjectSettingsPageData {
     pub selected_project_id: Option<String>,
@@ -86,6 +93,11 @@ pub struct ProjectSettingsPageData {
     // Export fields
     pub is_exporting_coco: bool,
     pub export_error: Option<String>,
+    // Import fields
+    pub is_importing_coco: bool,
+    pub import_error: Option<String>,
+    pub import_success_message: Option<String>,
+    pub import_started_time: Option<std::time::Instant>,
 }
 
 // Category management structures
@@ -315,8 +327,17 @@ fn parse_storage_config(page_data: &mut ProjectSettingsPageData, storage_config:
     }
 }
 
-pub fn update() {
-    // No update logic needed for project settings page currently
+pub fn update(mut page_data: ResMut<ProjectSettingsPageData>) {
+    // Reset import state if it's been stuck for too long (file dialog cancelled)
+    if page_data.is_importing_coco {
+        if let Some(start_time) = page_data.import_started_time {
+            if start_time.elapsed().as_secs() > 10 {  // 10 seconds timeout
+                info!("Resetting import state due to timeout (dialog likely cancelled)");
+                page_data.is_importing_coco = false;
+                page_data.import_started_time = None;
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -909,6 +930,102 @@ pub fn ui_system(
                 
                 ui.add_space(20.0);
                 
+                // Import section
+                ui.group(|ui| {
+                    ui.vertical(|ui| {
+                        ui.strong("Import Data");
+                        ui.separator();
+                        ui.add_space(10.0);
+                        
+                        ui.label("Import annotation data from various formats:");
+                        ui.add_space(5.0);
+                        
+                        ui.horizontal(|ui| {
+                            let can_import = !page_data.is_importing_coco;
+                            if ui.add_enabled(can_import, egui::Button::new("📁 Import COCO Format")).clicked() {
+                                // Trigger file dialog for COCO import
+                                if let Some(token) = auth_state.get_jwt() {
+                                    if let Some(project_id_str) = page_data.selected_project_id.clone() {
+                                        page_data.is_importing_coco = true;
+                                        page_data.import_error = None;
+                                        page_data.import_success_message = None;
+                                        page_data.import_started_time = Some(std::time::Instant::now());
+                                        
+                                        // Open file dialog and spawn import task
+                                        let project_id = project_id_str.clone();
+                                        let token_clone = token.clone();
+                                        
+                                        std::thread::spawn(move || {
+                                            if let Some(file_path) = FileDialog::new()
+                                                .add_filter("JSON", &["json"])
+                                                .pick_file() 
+                                            {
+                                                if let Some(path_str) = file_path.to_str() {
+                                                    info!("User selected file for COCO import: {}", path_str);
+                                                    
+                                                    // Perform the import
+                                                    let rt = tokio::runtime::Runtime::new().unwrap();
+                                                    rt.block_on(async {
+                                                        use crate::api::export::ExportApi;
+                                                        
+                                                        if let Ok(project_uuid) = Uuid::parse_str(&project_id) {
+                                                            let export_api = ExportApi::new();
+                                                            match export_api.import_coco_file(&token_clone, project_uuid, path_str).await {
+                                                                Ok(result) => {
+                                                                    info!("COCO import completed successfully!");
+                                                                    info!("Message: {}", result.message);
+                                                                    info!("Categories created: {}", result.stats.categories_created);
+                                                                    info!("Categories updated: {}", result.stats.categories_updated);
+                                                                    info!("Tasks created: {}", result.stats.tasks_created);
+                                                                    info!("Annotations created: {}", result.stats.annotations_created);
+                                                                    if !result.stats.errors.is_empty() {
+                                                                        warn!("Import completed with {} errors:", result.stats.errors.len());
+                                                                        for error in &result.stats.errors {
+                                                                            warn!("  - {}", error);
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => {
+                                                                    error!("Failed to import COCO file: {}", e);
+                                                                }
+                                                            }
+                                                        }
+                                                    });
+                                                } else {
+                                                    warn!("File path could not be converted to string");
+                                                }
+                                            } else {
+                                                info!("File dialog cancelled by user");
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                            
+                            if page_data.is_importing_coco {
+                                ui.add(egui::Spinner::new());
+                                ui.label("Importing...");
+                            } else {
+                                ui.label("Import categories, tasks, and annotations from COCO format (JSON)");
+                            }
+                        });
+                        
+                        // Show import success message
+                        if let Some(message) = &page_data.import_success_message {
+                            ui.add_space(5.0);
+                            ui.colored_label(egui::Color32::GREEN, message);
+                        }
+                        
+                        // Show import error
+                        if let Some(error) = &page_data.import_error {
+                            ui.add_space(5.0);
+                            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+                        }
+                    });
+                });
+                
+                ui.add_space(20.0);
+                
                 // Danger zone
                 ui.group(|ui| {
                     ui.vertical(|ui| {
@@ -1384,6 +1501,70 @@ fn process_category_results(
 }
 
 
+pub fn handle_import_coco_task(
+    mut commands: Commands,
+    mut page_data: ResMut<ProjectSettingsPageData>,
+    mut import_tasks: Query<(Entity, &ImportCocoTask)>,
+) {
+    use crate::api::export::ExportApi;
+    
+    for (entity, task) in import_tasks.iter_mut() {
+        info!("Starting COCO import for project: {}", task.project_id);
+        let project_id = task.project_id.clone();
+        let token = task.token.clone();
+        let file_path = task.file_path.clone();
+        
+        // Parse project ID
+        if let Ok(project_uuid) = Uuid::parse_str(&project_id) {
+            info!("Parsed project UUID: {}", project_uuid);
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            info!("Created Tokio runtime for COCO import");
+            
+            match rt.block_on(async {
+                let export_api = ExportApi::new();
+                export_api.import_coco_file(&token, project_uuid, &file_path).await
+            }) {
+                Ok(result) => {
+                    info!("COCO import completed successfully: {}", result.message);
+                    page_data.is_importing_coco = false;
+                    page_data.import_error = None;
+                    
+                    let stats_msg = format!(
+                        "Import completed! Created {} categories, {} tasks, {} annotations. Updated {} categories.", 
+                        result.stats.categories_created,
+                        result.stats.tasks_created,
+                        result.stats.annotations_created,
+                        result.stats.categories_updated
+                    );
+                    
+                    if !result.stats.errors.is_empty() {
+                        page_data.import_success_message = Some(format!(
+                            "{} Note: {} errors occurred during import.",
+                            stats_msg,
+                            result.stats.errors.len()
+                        ));
+                    } else {
+                        page_data.import_success_message = Some(stats_msg);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to import COCO file for project {}: {}", project_uuid, e);
+                    page_data.is_importing_coco = false;
+                    page_data.import_error = Some(format!("Failed to import: {}", e));
+                    page_data.import_success_message = None;
+                }
+            }
+        } else {
+            error!("Failed to parse project ID as UUID: {}", project_id);
+            page_data.is_importing_coco = false;
+            page_data.import_error = Some("Invalid project ID".to_string());
+            page_data.import_success_message = None;
+        }
+        
+        commands.entity(entity).despawn();
+    }
+}
+
 pub fn handle_select_file_path_task(
     mut commands: Commands,
     mut page_data: ResMut<ProjectSettingsPageData>,
@@ -1463,6 +1644,7 @@ impl Plugin for ProjectSettingsPlugin {
                handle_save_storage_config_task,
                handle_select_file_path_task,
                handle_download_coco_export_task,
+               handle_import_coco_task,
                handle_sync_events,
                handle_legacy_category_events,
                handle_category_requests,

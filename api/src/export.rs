@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
 use chrono::{Datelike, Utc};
+use actix_multipart::Multipart;
+use futures_util::TryStreamExt;
 
 use crate::auth::{JwtManager, Claims};
 
@@ -53,6 +55,385 @@ pub struct CocoCategory {
     pub id: i32,
     pub name: String,
     pub supercategory: String,
+}
+
+// Import specific structures
+#[derive(Debug, Deserialize)]
+pub struct CocoImport {
+    #[allow(dead_code)]
+    pub info: Option<CocoInfo>,
+    pub images: Vec<CocoImage>,
+    pub annotations: Vec<CocoAnnotation>,
+    pub categories: Vec<CocoCategory>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub success: bool,
+    pub message: String,
+    pub stats: ImportStats,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportStats {
+    pub categories_created: usize,
+    pub categories_updated: usize,
+    pub tasks_created: usize,
+    pub annotations_created: usize,
+    pub errors: Vec<String>,
+}
+
+pub async fn import_project_coco(
+    req: HttpRequest,
+    path: web::Path<String>,
+    mut payload: Multipart,
+    pool: web::Data<Pool<Postgres>>,
+    config: web::Data<crate::auth::OAuthConfig>,
+) -> impl Responder {
+    // Extract and verify JWT token
+    let claims = match extract_user_claims(&req, &config) {
+        Ok(claims) => claims,
+        Err(response) => return response,
+    };
+
+    let user_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => return HttpResponse::BadRequest().json("Invalid user ID"),
+    };
+
+    let project_id = match Uuid::parse_str(&path.into_inner()) {
+        Ok(id) => id,
+        Err(_) => return HttpResponse::BadRequest().json("Invalid project ID"),
+    };
+
+    // Check if user has access to this project
+    if !user_has_project_access(&pool, project_id, user_id).await {
+        return HttpResponse::NotFound().json("Project not found or access denied");
+    }
+
+    // Extract JSON data from multipart upload
+    let json_data = match extract_json_from_multipart(&mut payload).await {
+        Ok(data) => data,
+        Err(err) => return HttpResponse::BadRequest().json(format!("Failed to read file: {}", err)),
+    };
+
+    // Parse COCO JSON
+    let coco_data: CocoImport = match serde_json::from_str(&json_data) {
+        Ok(data) => data,
+        Err(err) => return HttpResponse::BadRequest().json(format!("Invalid COCO JSON: {}", err)),
+    };
+
+    // Validate COCO data
+    if let Err(validation_error) = validate_coco_data(&coco_data) {
+        return HttpResponse::BadRequest().json(format!("Invalid COCO data: {}", validation_error));
+    }
+
+    // Import the data
+    match import_coco_data(&pool, project_id, user_id, coco_data).await {
+        Ok(result) => HttpResponse::Ok().json(result),
+        Err(err) => {
+            eprintln!("Import error: {:?}", err);
+            HttpResponse::InternalServerError().json("Failed to import COCO data")
+        }
+    }
+}
+
+async fn extract_json_from_multipart(payload: &mut Multipart) -> Result<String, Box<dyn std::error::Error>> {
+    while let Some(mut field) = payload.try_next().await? {
+        let field_name = field.name();
+        
+        if field_name == Some("file") {
+            let mut data = bytes::BytesMut::new();
+            while let Some(chunk) = field.try_next().await? {
+                data.extend_from_slice(&chunk);
+            }
+            
+            return Ok(String::from_utf8(data.to_vec())?);
+        }
+    }
+    
+    Err("No file field found in multipart data".into())
+}
+
+fn validate_coco_data(coco_data: &CocoImport) -> Result<(), String> {
+    // Check for required fields
+    if coco_data.categories.is_empty() {
+        return Err("No categories found in COCO data".to_string());
+    }
+
+    if coco_data.images.is_empty() {
+        return Err("No images found in COCO data".to_string());
+    }
+
+    // Validate category IDs are unique
+    let mut category_ids = std::collections::HashSet::new();
+    for category in &coco_data.categories {
+        if !category_ids.insert(category.id) {
+            return Err(format!("Duplicate category ID: {}", category.id));
+        }
+    }
+
+    // Validate image IDs are unique
+    let mut image_ids = std::collections::HashSet::new();
+    for image in &coco_data.images {
+        if !image_ids.insert(image.id) {
+            return Err(format!("Duplicate image ID: {}", image.id));
+        }
+    }
+
+    // Validate annotations reference valid categories and images
+    let category_id_set: std::collections::HashSet<_> = coco_data.categories.iter().map(|c| c.id).collect();
+    let image_id_set: std::collections::HashSet<_> = coco_data.images.iter().map(|i| i.id).collect();
+
+    for annotation in &coco_data.annotations {
+        if !category_id_set.contains(&annotation.category_id) {
+            return Err(format!("Annotation {} references invalid category ID: {}", annotation.id, annotation.category_id));
+        }
+        if !image_id_set.contains(&annotation.image_id) {
+            return Err(format!("Annotation {} references invalid image ID: {}", annotation.id, annotation.image_id));
+        }
+        if annotation.bbox.len() != 4 {
+            return Err(format!("Annotation {} has invalid bbox format", annotation.id));
+        }
+    }
+
+    Ok(())
+}
+
+async fn import_coco_data(
+    pool: &Pool<Postgres>,
+    project_id: Uuid,
+    user_id: Uuid,
+    coco_data: CocoImport,
+) -> Result<ImportResult, sqlx::Error> {
+    let mut stats = ImportStats {
+        categories_created: 0,
+        categories_updated: 0,
+        tasks_created: 0,
+        annotations_created: 0,
+        errors: Vec::new(),
+    };
+
+    // Start transaction
+    let mut tx = pool.begin().await?;
+
+    // Import categories
+    let mut category_mapping = std::collections::HashMap::new();
+    for coco_category in &coco_data.categories {
+        match import_category(&mut tx, project_id, coco_category).await {
+            Ok((category_id, was_created)) => {
+                category_mapping.insert(coco_category.id, category_id);
+                if was_created {
+                    stats.categories_created += 1;
+                } else {
+                    stats.categories_updated += 1;
+                }
+            }
+            Err(err) => {
+                stats.errors.push(format!("Failed to import category '{}': {}", coco_category.name, err));
+            }
+        }
+    }
+
+    // Import images as tasks
+    let mut image_mapping = std::collections::HashMap::new();
+    for coco_image in &coco_data.images {
+        match import_image_as_task(&mut tx, project_id, coco_image).await {
+            Ok(task_id) => {
+                image_mapping.insert(coco_image.id, task_id);
+                stats.tasks_created += 1;
+            }
+            Err(err) => {
+                stats.errors.push(format!("Failed to import image '{}': {}", coco_image.file_name, err));
+            }
+        }
+    }
+
+    // Import annotations
+    for coco_annotation in &coco_data.annotations {
+        if let (Some(&category_id), Some(&task_id)) = (
+            category_mapping.get(&coco_annotation.category_id),
+            image_mapping.get(&coco_annotation.image_id),
+        ) {
+            match import_annotation(&mut tx, task_id, category_id, coco_annotation, user_id).await {
+                Ok(_) => {
+                    stats.annotations_created += 1;
+                }
+                Err(err) => {
+                    stats.errors.push(format!("Failed to import annotation {}: {}", coco_annotation.id, err));
+                }
+            }
+        } else {
+            stats.errors.push(format!("Annotation {} references invalid category or image", coco_annotation.id));
+        }
+    }
+
+    // Commit transaction
+    tx.commit().await?;
+
+    Ok(ImportResult {
+        success: stats.errors.is_empty(),
+        message: if stats.errors.is_empty() {
+            "Import completed successfully".to_string()
+        } else {
+            format!("Import completed with {} errors", stats.errors.len())
+        },
+        stats,
+    })
+}
+
+async fn import_category(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    project_id: Uuid,
+    coco_category: &CocoCategory,
+) -> Result<(Uuid, bool), sqlx::Error> {
+    // Check if category already exists by name
+    let existing_category = sqlx::query!(
+        "SELECT id FROM image_annotation_categories WHERE project_id = $1 AND name = $2",
+        project_id,
+        coco_category.name
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    match existing_category {
+        Some(existing) => {
+            // Update existing category
+            sqlx::query!(
+                r#"
+                UPDATE image_annotation_categories 
+                SET supercategory = $1, coco_id = $2, updated_at = NOW()
+                WHERE id = $3
+                "#,
+                Some(coco_category.supercategory.clone()),
+                Some(coco_category.id),
+                existing.id
+            )
+            .execute(&mut **tx)
+            .await?;
+            
+            Ok((existing.id, false))
+        }
+        None => {
+            // Create new category
+            let new_id = Uuid::new_v4();
+            sqlx::query!(
+                r#"
+                INSERT INTO image_annotation_categories 
+                (id, project_id, name, supercategory, coco_id, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+                "#,
+                new_id,
+                project_id,
+                coco_category.name,
+                Some(coco_category.supercategory.clone()),
+                Some(coco_category.id)
+            )
+            .execute(&mut **tx)
+            .await?;
+            
+            Ok((new_id, true))
+        }
+    }
+}
+
+async fn import_image_as_task(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    project_id: Uuid,
+    coco_image: &CocoImage,
+) -> Result<Uuid, sqlx::Error> {
+    // Check if task already exists by file name
+    let existing_task = sqlx::query!(
+        "SELECT id FROM tasks WHERE project_id = $1 AND name = $2",
+        project_id,
+        coco_image.file_name
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    match existing_task {
+        Some(existing) => {
+            // Update existing task with resource URL if available
+            if let Some(ref url) = coco_image.coco_url {
+                sqlx::query!(
+                    "UPDATE tasks SET resource_url = $1, updated_at = NOW() WHERE id = $2",
+                    url,
+                    existing.id
+                )
+                .execute(&mut **tx)
+                .await?;
+            }
+            Ok(existing.id)
+        }
+        None => {
+            // Create new task
+            let new_id = Uuid::new_v4();
+            sqlx::query!(
+                r#"
+                INSERT INTO tasks (id, project_id, name, resource_url, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, NOW(), NOW())
+                "#,
+                new_id,
+                project_id,
+                coco_image.file_name,
+                coco_image.coco_url
+            )
+            .execute(&mut **tx)
+            .await?;
+            
+            Ok(new_id)
+        }
+    }
+}
+
+async fn import_annotation(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    task_id: Uuid,
+    category_id: Uuid,
+    coco_annotation: &CocoAnnotation,
+    user_id: Uuid,
+) -> Result<Uuid, sqlx::Error> {
+    let annotation_id = Uuid::new_v4();
+    let image_annotation_id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+
+    // Create annotation
+    sqlx::query!(
+        r#"
+        INSERT INTO annotations (id, task_id, metadata, annotated_by, annotated_at, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "#,
+        annotation_id,
+        task_id,
+        serde_json::json!({"imported_from_coco": true, "original_coco_id": coco_annotation.id}),
+        user_id,
+        now,
+        now,
+        now
+    )
+    .execute(&mut **tx)
+    .await?;
+
+    // Create image annotation
+    sqlx::query!(
+        r#"
+        INSERT INTO image_annotations (id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        "#,
+        image_annotation_id,
+        annotation_id,
+        Some(category_id),
+        &coco_annotation.bbox,
+        Some(coco_annotation.area),
+        coco_annotation.iscrowd == 1,
+        serde_json::json!({"imported_from_coco": true}),
+        now,
+        now
+    )
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(annotation_id)
 }
 
 pub async fn export_project_coco(
@@ -493,6 +874,170 @@ mod tests {
 
         let req = test::TestRequest::get()
             .uri(&format!("/projects/{}/export/coco", project.id))
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_import_project_coco_success() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        // Create a test project
+        let project = crate::projects::create_project_in_db(&pool, "Test Project", Some("Description"), None, user.id).await.unwrap();
+
+        // Create test COCO data
+        let coco_data = serde_json::json!({
+            "info": {
+                "year": 2024,
+                "version": "1.0",
+                "description": "Test dataset",
+                "contributor": "test@example.com",
+                "url": "https://example.com",
+                "date_created": "2024-01-01T00:00:00Z"
+            },
+            "images": [
+                {
+                    "id": 1,
+                    "width": 640,
+                    "height": 480,
+                    "file_name": "test_image.jpg",
+                    "license": null,
+                    "flickr_url": null,
+                    "coco_url": "https://example.com/test_image.jpg",
+                    "date_captured": "2024-01-01T00:00:00Z"
+                }
+            ],
+            "annotations": [
+                {
+                    "id": 1,
+                    "image_id": 1,
+                    "category_id": 1,
+                    "segmentation": [],
+                    "area": 30000.0,
+                    "bbox": [100.0, 50.0, 200.0, 150.0],
+                    "iscrowd": 0
+                }
+            ],
+            "categories": [
+                {
+                    "id": 1,
+                    "name": "person",
+                    "supercategory": "human"
+                }
+            ]
+        });
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{project_id}/import/coco", web::post().to(import_project_coco))
+        ).await;
+
+        // Create multipart form data
+        let json_str = serde_json::to_string(&coco_data).unwrap();
+        let boundary = "----formdata-test-boundary";
+        let body = format!(
+            "--{}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.json\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--{}--\r\n",
+            boundary, json_str, boundary
+        );
+
+        let req = test::TestRequest::post()
+            .uri(&format!("/projects/{}/import/coco", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .insert_header(("content-type", format!("multipart/form-data; boundary={}", boundary)))
+            .set_payload(body)
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 200);
+
+        let body: ImportResult = test::read_body_json(resp).await;
+        assert!(body.success);
+        assert_eq!(body.stats.categories_created, 1);
+        assert_eq!(body.stats.tasks_created, 1);
+        assert_eq!(body.stats.annotations_created, 1);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_import_project_coco_invalid_json() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let token = create_auth_token(&oauth_config, &user);
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = crate::projects::create_project_in_db(&pool, "Test Project", Some("Description"), None, user.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{project_id}/import/coco", web::post().to(import_project_coco))
+        ).await;
+
+        let boundary = "----formdata-test-boundary";
+        let body = format!(
+            "--{}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.json\"\r\nContent-Type: application/json\r\n\r\n{{\r\n--{}--\r\n",
+            boundary, boundary
+        );
+
+        let req = test::TestRequest::post()
+            .uri(&format!("/projects/{}/import/coco", project.id))
+            .insert_header(("Authorization", format!("Bearer {}", token)))
+            .insert_header(("content-type", format!("multipart/form-data; boundary={}", boundary)))
+            .set_payload(body)
+            .to_request();
+
+        let resp = test::call_service(&app, req).await;
+        assert_eq!(resp.status(), 400);
+    }
+
+    #[actix_web::test]
+    #[serial]
+    async fn test_import_project_coco_unauthorized() {
+        let pool = test_utils::setup_test_db().await;
+        let user = test_utils::create_test_user_with_details(&pool).await;
+        let oauth_config = create_test_oauth_config();
+        let auth_storage = AuthStorage::new(pool.clone());
+
+        let project = crate::projects::create_project_in_db(&pool, "Test Project", Some("Description"), None, user.id).await.unwrap();
+
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(pool.clone()))
+                .app_data(web::Data::new(oauth_config))
+                .app_data(web::Data::new(auth_storage))
+                .route("/projects/{project_id}/import/coco", web::post().to(import_project_coco))
+        ).await;
+
+        let coco_data = serde_json::json!({
+            "images": [],
+            "annotations": [],
+            "categories": []
+        });
+
+        let json_str = serde_json::to_string(&coco_data).unwrap();
+        let boundary = "----formdata-test-boundary";
+        let body = format!(
+            "--{}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.json\"\r\nContent-Type: application/json\r\n\r\n{}\r\n--{}--\r\n",
+            boundary, json_str, boundary
+        );
+
+        let req = test::TestRequest::post()
+            .uri(&format!("/projects/{}/import/coco", project.id))
+            .insert_header(("content-type", format!("multipart/form-data; boundary={}", boundary)))
+            .set_payload(body)
             .to_request();
 
         let resp = test::call_service(&app, req).await;

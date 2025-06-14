@@ -122,6 +122,8 @@ async fn main() -> std::io::Result<()> {
             .route("/projects/{project_id}/tasks/{task_id}/annotations/{annotation_id}", web::delete().to(annotations::delete_annotation))
             // Export endpoints
             .route("/projects/{project_id}/export/coco", web::get().to(export::export_project_coco))
+            // Import endpoints  
+            .route("/projects/{project_id}/import/coco", web::post().to(export::import_project_coco))
     })
     .bind("127.0.0.1:8080")?
     .run()
