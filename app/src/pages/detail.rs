@@ -8,17 +8,16 @@ use crate::core::rectangle::{Rectangle, rect_color};
 use crate::io::image_loader;
 use crate::ui::components::egui_common;
 use crate::ui::detail_ui;
-use crate::annotations::{
-    AnnotationState, SaveAnnotationEvent, LoadAnnotationEvent, CreateCategoryEvent,
-    AnnotationSavedEvent, AnnotationLoadedEvent, CategoryCreatedEvent, AnnotationErrorEvent,
-    LoadCategoriesEvent,
-};
+use crate::api::categories::CategoriesApi;
+use crate::api::annotations::AnnotationsApi;
+pub use crate::api::categories::AnnotationCategory;
+pub use crate::api::annotations::{AnnotationWithCategory, CreateAnnotationRequest};
 use bevy::input::mouse::{MouseButtonInput, MouseWheel};
 use bevy::prelude::*;
 use bevy::text::Text2d;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiContextPass};
-use uuid;
+use uuid::Uuid;
 
 #[derive(Resource, Default)]
 pub struct Parameters {
@@ -64,7 +63,6 @@ pub fn setup(
     mut images: ResMut<Assets<Image>>,
     mut config_store: ResMut<GizmoConfigStore>,
     mut annotation_state: ResMut<AnnotationState>,
-    mut load_categories_events: EventWriter<LoadCategoriesEvent>,
     auth_state: Res<crate::auth::AuthState>,
 ) {
     println!("detail setup");
@@ -121,11 +119,17 @@ pub fn setup(
         
         // Load categories for this project
         if let Some(token) = auth_state.get_jwt() {
-            load_categories_events.write(LoadCategoriesEvent {
-                project_id,
-                token: token.clone(),
-            });
-            info!("Loading categories for project: {}", project_id);
+            let categories_api = CategoriesApi::new();
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            match rt.block_on(categories_api.list_categories(token, project_id)) {
+                Ok(categories) => {
+                    annotation_state.categories = categories;
+                    info!("Loaded categories for project: {}", project_id);
+                }
+                Err(error) => {
+                    error!("Failed to load categories: {}", error);
+                }
+            }
         } else {
             warn!("No JWT token available for loading categories");
         }
@@ -345,59 +349,32 @@ pub fn ui_system(
     mut rectangles: ResMut<Rectangles>,
     mut selected_index: ResMut<SelectedRectangleIndex>,
     mut detail_data: ResMut<DetailData>,
-    annotation_state: Res<AnnotationState>,
+    mut annotation_state: ResMut<AnnotationState>,
     auth_state: Res<crate::auth::AuthState>,
     user_state: Res<crate::auth::UserState>,
     projects_state: Res<crate::auth::ProjectsState>,
-    mut save_events: EventWriter<SaveAnnotationEvent>,
-    mut load_events: EventWriter<LoadAnnotationEvent>,
-    mut create_category_events: EventWriter<CreateCategoryEvent>,
 ) {
     egui_common::ui_top_panel(&mut contexts, current_state, &mut next_state);
 
     let rect_count_before = rectangles.0.len();
-    detail_ui::render_side_panels_with_annotations(
+    let loaded_annotations = detail_ui::render_side_panels_with_annotations(
         &mut contexts, 
         &mut rectangles.0, 
         &mut selected_index.0,
-        &annotation_state,
+        &mut annotation_state,
         &auth_state,
         &user_state,
         &projects_state,
-        &mut save_events,
-        &mut load_events,
-        &mut create_category_events,
         detail_data.image_dimensions,
     );
     
-    // Check if rectangles were sorted (order might have changed)
-    if rect_count_before == rectangles.0.len() && rect_count_before > 0 {
-        // Update text entities to reflect new order
-        update_text_entities(&mut commands, &mut detail_data, &rectangles);
-    }
-
-    detail_ui::render_rectangle_editor_window(&mut contexts, &mut rectangles.0, selected_index.0);
-}
-
-pub fn handle_annotation_events(
-    mut annotation_saved_events: EventReader<AnnotationSavedEvent>,
-    mut annotation_loaded_events: EventReader<AnnotationLoadedEvent>,
-    mut category_created_events: EventReader<CategoryCreatedEvent>,
-    mut annotation_error_events: EventReader<AnnotationErrorEvent>,
-    mut rectangles: ResMut<Rectangles>,
-    mut commands: Commands,
-    mut detail_data: ResMut<DetailData>,
-) {
-    for event in annotation_saved_events.read() {
-        info!("Annotations saved successfully: {} annotations", event.annotations.len());
-    }
-    
-    for event in annotation_loaded_events.read() {
-        info!("Annotations loaded: {} annotations", event.annotations.len());
+    // Handle loaded annotations
+    if let Some(annotations) = loaded_annotations {
+        info!("Processing loaded annotations: {} annotations", annotations.len());
         
         // Convert loaded annotations back to rectangles
         rectangles.0.clear();
-        for annotation_with_category in &event.annotations {
+        for annotation_with_category in &annotations {
             // Convert MS COCO bbox [x, y, width, height] back to rectangle
             if annotation_with_category.bbox.len() >= 4 {
                 let coco_x = annotation_with_category.bbox[0] as f32;
@@ -438,14 +415,15 @@ pub fn handle_annotation_events(
         update_text_entities(&mut commands, &mut detail_data, &rectangles);
     }
     
-    for event in category_created_events.read() {
-        info!("Category created: {}", event.category.name);
+    // Check if rectangles were sorted (order might have changed)
+    if rect_count_before == rectangles.0.len() && rect_count_before > 0 {
+        // Update text entities to reflect new order
+        update_text_entities(&mut commands, &mut detail_data, &rectangles);
     }
-    
-    for event in annotation_error_events.read() {
-        error!("Annotation error: {}", event.error);
-    }
+
+    detail_ui::render_rectangle_editor_window(&mut contexts, &mut rectangles.0, selected_index.0);
 }
+
 
 pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
     println!("detail cleanup");
@@ -459,6 +437,56 @@ pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
     commands.remove_resource::<CommandHistory>();
 }
 
+// Annotation types and structures
+#[derive(Resource, Default)]
+pub struct AnnotationState {
+    pub is_saving: bool,
+    pub categories: Vec<AnnotationCategory>,
+    pub current_task_id: Option<Uuid>,
+    pub current_project_id: Option<Uuid>,
+}
+
+// API types are now re-exported at the top of the file
+
+// Adapter functions to maintain existing interface while using new API modules
+pub mod annotation_client {
+    use super::*;
+
+    pub fn save_annotations(
+        project_id: Uuid,
+        task_id: Uuid,
+        annotations: Vec<CreateAnnotationRequest>,
+        token: String,
+    ) -> Result<Vec<AnnotationWithCategory>, String> {
+        let annotations_api = AnnotationsApi::new();
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("Failed to create runtime: {}", e))?;
+        
+        runtime.block_on(async {
+            annotations_api.save_annotations(&token, project_id, task_id, &annotations).await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    pub fn load_annotations(
+        project_id: Uuid,
+        task_id: Uuid,
+        token: String,
+    ) -> Result<Vec<AnnotationWithCategory>, String> {
+        let annotations_api = AnnotationsApi::new();
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("Failed to create runtime: {}", e))?;
+        
+        runtime.block_on(async {
+            annotations_api.list_annotations(&token, project_id, task_id).await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+}
+
+
+
 pub struct DetailPlugin;
 
 impl Plugin for DetailPlugin {
@@ -469,8 +497,9 @@ impl Plugin for DetailPlugin {
            .init_resource::<SelectedRectangleIndex>()
            .init_resource::<InteractionState>()
            .init_resource::<InteractionHandlers>()
+           .init_resource::<AnnotationState>()
            .add_systems(OnEnter(AppState::Detail), setup)
-           .add_systems(Update, (update, handle_annotation_events).run_if(in_state(AppState::Detail)))
+           .add_systems(Update, update.run_if(in_state(AppState::Detail)))
            .add_systems(
                EguiContextPass,
                ui_system.run_if(in_state(AppState::Detail)),

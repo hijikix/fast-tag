@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
+use crate::api::sync::{SyncApi, SyncRequest as ApiSyncRequest};
 
 pub struct SyncPlugin;
 
@@ -157,29 +158,32 @@ async fn execute_sync(
     project_id: Uuid,
     request: SyncRequest,
     token: String,
-    api_base_url: String,
+    _api_base_url: String,
 ) -> Result<SyncResponse, String> {
-    let client = reqwest::Client::new();
-    let url = format!("{}/projects/{}/sync", api_base_url, project_id);
+    let sync_api = SyncApi::new();
     
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .json(&request)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to send request: {}", e))?;
+    // Convert from local SyncRequest to API SyncRequest
+    let api_request = ApiSyncRequest {
+        prefix: request.prefix,
+        file_extensions: request.file_extensions,
+        overwrite_existing: request.overwrite_existing,
+    };
     
-    if response.status().is_success() {
-        response
-            .json::<SyncResponse>()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))
-    } else {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_default();
-        Err(format!("Sync failed with status {}: {}", status, error_text))
-    }
+    let api_response = sync_api.start_sync(&token, project_id, &api_request).await
+        .map_err(|e| e.to_string())?;
+    
+    // Convert from API SyncResponse to local SyncResponse
+    let local_response = SyncResponse {
+        sync_id: api_response.sync_id,
+        total_files: api_response.total_files,
+        tasks_created: api_response.tasks_created,
+        tasks_skipped: api_response.tasks_skipped,
+        errors: api_response.errors,
+        started_at: api_response.started_at,
+        completed_at: api_response.completed_at,
+    };
+    
+    Ok(local_response)
 }
 
 

@@ -1,6 +1,7 @@
 use crate::ui::components::egui_common;
 use crate::app::state::AppState;
-use crate::auth::{AuthState, TaskWithResolvedUrl, fetch_tasks};
+use crate::auth::{AuthState, TaskWithResolvedUrl};
+use crate::api::tasks::TasksApi;
 use bevy::prelude::*;
 use bevy::ui::Interaction;
 use bevy_egui::{EguiContexts, EguiContextPass, egui};
@@ -82,13 +83,14 @@ pub fn setup(
                 let project_id = params.project_id.clone();
                 tasks_state.start_fetching();
                 
+                let tasks_api = TasksApi::new();
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                match rt.block_on(fetch_tasks(&jwt, &project_id)) {
+                match rt.block_on(tasks_api.list_tasks(&jwt, &project_id)) {
                     Ok(tasks) => {
                         tasks_state.set_tasks(tasks);
                     }
                     Err(error) => {
-                        tasks_state.set_error(error);
+                        tasks_state.set_error(error.to_string());
                     }
                 }
             }
@@ -140,13 +142,14 @@ pub fn ui_system(
                         let project_id = params.project_id.clone();
                         tasks_state.start_fetching();
                         
+                        let tasks_api = TasksApi::new();
                         let rt = tokio::runtime::Runtime::new().unwrap();
-                        match rt.block_on(fetch_tasks(&jwt, &project_id)) {
+                        match rt.block_on(tasks_api.list_tasks(&jwt, &project_id)) {
                             Ok(tasks) => {
                                 tasks_state.set_tasks(tasks);
                             }
                             Err(error) => {
-                                tasks_state.set_error(error);
+                                tasks_state.set_error(error.to_string());
                             }
                         }
                     }

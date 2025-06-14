@@ -1,22 +1,10 @@
+use crate::api::auth::AuthApi;
 use crate::app::state::AppState;
 use crate::auth::AuthState;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiContextPass, egui};
-use reqwest;
-use serde::Deserialize;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Deserialize)]
-struct AuthResponse {
-    poll_token: String,
-    auth_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct PollResponse {
-    status: String,
-    jwt: Option<String>,
-}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 enum LoginState {
@@ -150,17 +138,11 @@ pub fn ui_system(
 }
 
 fn start_oauth_login(provider: &str, login_resource: &mut LoginResource) {
-    let api_url = format!("http://localhost:8080/auth/{}", provider);
+    let auth_api = AuthApi::new();
     
     let rt = tokio::runtime::Runtime::new().unwrap();
     match rt.block_on(async {
-        let response = reqwest::get(&api_url).await.map_err(|e| e.to_string())?;
-        if response.status().is_success() {
-            let auth_response: AuthResponse = response.json().await.map_err(|e| e.to_string())?;
-            Ok(auth_response)
-        } else {
-            Err(format!("API response status: {}", response.status()))
-        }
+        auth_api.start_oauth(provider).await
     }) {
         Ok(auth_response) => {
             // Open authentication URL in browser
@@ -183,25 +165,16 @@ fn start_oauth_login(provider: &str, login_resource: &mut LoginResource) {
 }
 
 async fn poll_for_jwt(poll_token: &str) -> Result<Option<String>, String> {
-    let poll_url = format!("http://localhost:8080/auth/poll/{}", poll_token);
+    let auth_api = AuthApi::new();
     
-    match reqwest::get(&poll_url).await {
-        Ok(response) => {
-            if response.status().is_success() {
-                match response.json::<PollResponse>().await {
-                    Ok(poll_response) => {
-                        match poll_response.status.as_str() {
-                            "completed" => Ok(poll_response.jwt),
-                            "pending" => Ok(None),
-                            "expired" => Err("Authentication session expired".to_string()),
-                            "failed" => Err("Authentication failed".to_string()),
-                            _ => Err(format!("Unknown status: {}", poll_response.status)),
-                        }
-                    }
-                    Err(e) => Err(format!("Failed to parse poll response: {}", e)),
-                }
-            } else {
-                Err(format!("Poll request failed with status: {}", response.status()))
+    match auth_api.poll_auth(poll_token).await {
+        Ok(poll_response) => {
+            match poll_response.status.as_str() {
+                "completed" => Ok(poll_response.jwt),
+                "pending" => Ok(None),
+                "expired" => Err("Authentication session expired".to_string()),
+                "failed" => Err("Authentication failed".to_string()),
+                _ => Err(format!("Unknown status: {}", poll_response.status)),
             }
         }
         Err(e) => Err(format!("Failed to poll for JWT: {}", e)),
