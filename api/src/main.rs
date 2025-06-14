@@ -8,6 +8,7 @@ mod storage;
 mod sync;
 mod image_annotation_categories;
 mod annotations;
+mod export;
 
 #[cfg(test)]
 mod test_utils;
@@ -119,6 +120,8 @@ async fn main() -> std::io::Result<()> {
             .route("/projects/{project_id}/tasks/{task_id}/annotations/{annotation_id}", web::get().to(annotations::get_annotation))
             .route("/projects/{project_id}/tasks/{task_id}/annotations/{annotation_id}", web::put().to(annotations::update_annotation))
             .route("/projects/{project_id}/tasks/{task_id}/annotations/{annotation_id}", web::delete().to(annotations::delete_annotation))
+            // Export endpoints
+            .route("/projects/{project_id}/export/coco", web::get().to(export::export_project_coco))
     })
     .bind("127.0.0.1:8080")?
     .run()
