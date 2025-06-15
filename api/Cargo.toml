@@ -19,6 +19,8 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 bytes = "1.0"
 mime_guess = "2.0"
+actix-multipart = "0.7"
+futures-util = "0.3"
 
 # AWS S3 / MinIO - using rusoto for better stability
 rusoto_core = "0.48"
