@@ -238,9 +238,7 @@ pub fn render_annotation_controls(
     _user_state: &UserState,
     _projects_state: &ProjectsState,
     image_dimensions: Vec2,
-) -> Option<Vec<crate::pages::detail::AnnotationWithCategory>> {
-    let mut loaded_annotations = None;
-    
+) {
     ui.group(|ui| {
         ui.vertical_centered(|ui| {
             ui.heading("Annotations");
@@ -340,13 +338,66 @@ pub fn render_annotation_controls(
                 }
             }
             
-            if ui.button("📁 Load Annotations").clicked() {
+            if ui.button("🔄 Reload Annotations").clicked() {
                 if let Some(token) = &auth_state.jwt {
                     if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
                         match annotation_client::load_annotations(project_id, task_id, token.clone()) {
                             Ok(annotations) => {
                                 info!("Annotations loaded: {} annotations", annotations.len());
-                                loaded_annotations = Some(annotations);
+                                info!("Loaded annotations JSON: {}", serde_json::to_string_pretty(&annotations).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                                
+                                // Convert loaded annotations back to rectangles
+                                rectangles.clear();
+                                for annotation_with_category in &annotations {
+                                    // Convert MS COCO bbox [x, y, width, height] back to rectangle
+                                    if annotation_with_category.bbox.len() >= 4 {
+                                        let coco_x = annotation_with_category.bbox[0] as f32;
+                                        let coco_y = annotation_with_category.bbox[1] as f32;
+                                        let width = annotation_with_category.bbox[2] as f32;
+                                        let height = annotation_with_category.bbox[3] as f32;
+                                        
+                                        // Transform from COCO coordinates (top-left origin) to Bevy coordinates (center-origin)
+                                        let img_width = image_dimensions.x;
+                                        let img_height = image_dimensions.y;
+                                        
+                                        // Transform X: subtract half image width to shift origin from left edge to center
+                                        let bevy_min_x = coco_x - (img_width / 2.0);
+                                        let bevy_max_x = (coco_x + width) - (img_width / 2.0);
+                                        
+                                        // Transform Y: flip Y axis and shift origin from top edge to center
+                                        // COCO Y increases downward, Bevy Y increases upward
+                                        let bevy_max_y = (img_height / 2.0) - coco_y;  // coco_y (top) becomes max_y in Bevy
+                                        let bevy_min_y = (img_height / 2.0) - (coco_y + height);  // coco_y + height (bottom) becomes min_y in Bevy
+                                        
+                                        let pos1 = Vec2::new(bevy_min_x, bevy_min_y);
+                                        let pos2 = Vec2::new(bevy_max_x, bevy_max_y);
+                                        
+                                        // Extract class from metadata if available
+                                        let class = if let Some(class_value) = annotation_with_category.metadata.get("class") {
+                                            class_value.as_u64().unwrap_or(1) as usize
+                                        } else {
+                                            // Map category back to class (inverse of save mapping)
+                                            if let Some(cat_id) = annotation_with_category.category_id {
+                                                if let Some(category_index) = annotation_state.categories.iter().position(|c| c.id == cat_id) {
+                                                    (category_index % 9) + 1
+                                                } else {
+                                                    1 // Default to class 1 if category not found
+                                                }
+                                            } else {
+                                                1 // Default to class 1 if no category
+                                            }
+                                        };
+                                        
+                                        let rectangle = Rectangle {
+                                            position: (pos1, pos2),
+                                            class,
+                                        };
+                                        
+                                        rectangles.push(rectangle);
+                                    }
+                                }
+                                
+                                info!("Converted {} annotations to rectangles", rectangles.len());
                             }
                             Err(error) => {
                                 error!("Failed to load annotations: {}", error);
@@ -361,8 +412,6 @@ pub fn render_annotation_controls(
             ui.label("⏳ Saving annotations...");
         }
     });
-    
-    loaded_annotations
 }
 
 fn convert_rectangles_to_annotations(rectangles: &[Rectangle], categories: &[AnnotationCategory], image_dimensions: Vec2) -> Vec<CreateAnnotationRequest> {
@@ -443,8 +492,8 @@ pub fn render_side_panels_with_annotations(
     user_state: &UserState,
     projects_state: &ProjectsState,
     image_dimensions: Vec2,
-) -> Option<Vec<crate::pages::detail::AnnotationWithCategory>> {
-    let loaded_annotations = egui::SidePanel::left("left_panel")
+) {
+    egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(250.0)
         .width_range(80.0..=500.0)
@@ -458,7 +507,7 @@ pub fn render_side_panels_with_annotations(
                 projects_state,
                 image_dimensions,
             )
-        }).inner;
+        });
 
     egui::SidePanel::right("right_panel")
         .resizable(true)
@@ -481,8 +530,6 @@ pub fn render_side_panels_with_annotations(
                 ui.separator();
             });
         });
-    
-    loaded_annotations
 }
 
 
