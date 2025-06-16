@@ -121,10 +121,61 @@ pub fn setup(
         if let Some(token) = auth_state.get_jwt() {
             let categories_api = CategoriesApi::new();
             let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(categories_api.list_categories(token, project_id)) {
+            match rt.block_on(categories_api.list_categories(&token, project_id)) {
                 Ok(categories) => {
-                    annotation_state.categories = categories;
+                    annotation_state.categories = categories.clone();
                     info!("Loaded categories for project: {}", project_id);
+                    
+                    // Automatically load existing annotations
+                    if let Some(task_id) = params.task_id {
+                        match annotation_client::load_annotations(project_id, task_id, token.to_string()) {
+                            Ok(annotations) => {
+                                info!("Automatically loaded {} annotations", annotations.len());
+                                info!("Auto-loaded annotations JSON: {}", serde_json::to_string_pretty(&annotations).unwrap_or_else(|_| "Failed to serialize".to_string()));
+                                
+                                // Convert loaded annotations to rectangles
+                                let mut loaded_rectangles = Vec::new();
+                                for annotation in annotations {
+                                    let x = annotation.bbox[0] as f32;
+                                    let y = annotation.bbox[1] as f32;
+                                    let width = annotation.bbox[2] as f32;
+                                    let height = annotation.bbox[3] as f32;
+                                    
+                                    // Convert from COCO format (top-left origin) to Bevy format (center origin)
+                                    let center_x = x + width / 2.0 - image_dimensions.x / 2.0;
+                                    let center_y = image_dimensions.y / 2.0 - (y + height / 2.0);
+                                    
+                                    // Calculate corner positions for Rectangle
+                                    let half_width = width / 2.0;
+                                    let half_height = height / 2.0;
+                                    let start = Vec2::new(center_x - half_width, center_y - half_height);
+                                    let end = Vec2::new(center_x + half_width, center_y + half_height);
+                                    
+                                    // Find the class index from category_id
+                                    let class = if let Some(cat_id) = annotation.category_id {
+                                        if let Some(category_index) = categories.iter().position(|cat| cat.id == cat_id) {
+                                            (category_index % 9) + 1  // Convert 0-based index to 1-based class (1-9)
+                                        } else {
+                                            1  // Default to class 1 if category not found
+                                        }
+                                    } else {
+                                        1  // Default to class 1 if no category
+                                    };
+                                    
+                                    let rect = Rectangle::new(class, start, end);
+                                    loaded_rectangles.push(rect);
+                                }
+                                
+                                // Update rectangles resource
+                                commands.insert_resource(Rectangles(loaded_rectangles.clone()));
+                                info!("Converted and loaded {} rectangles", loaded_rectangles.len());
+                            }
+                            Err(error) => {
+                                // Don't treat this as fatal - annotations might not exist yet
+                                info!("No existing annotations found or failed to load: {}", error);
+                            }
+                        }
+                    }
                 }
                 Err(error) => {
                     error!("Failed to load categories: {}", error);
@@ -357,7 +408,7 @@ pub fn ui_system(
     egui_common::ui_top_panel(&mut contexts, current_state, &mut next_state);
 
     let rect_count_before = rectangles.0.len();
-    let loaded_annotations = detail_ui::render_side_panels_with_annotations(
+    detail_ui::render_side_panels_with_annotations(
         &mut contexts, 
         &mut rectangles.0, 
         &mut selected_index.0,
@@ -367,53 +418,6 @@ pub fn ui_system(
         &projects_state,
         detail_data.image_dimensions,
     );
-    
-    // Handle loaded annotations
-    if let Some(annotations) = loaded_annotations {
-        info!("Processing loaded annotations: {} annotations", annotations.len());
-        
-        // Convert loaded annotations back to rectangles
-        rectangles.0.clear();
-        for annotation_with_category in &annotations {
-            // Convert MS COCO bbox [x, y, width, height] back to rectangle
-            if annotation_with_category.bbox.len() >= 4 {
-                let coco_x = annotation_with_category.bbox[0] as f32;
-                let coco_y = annotation_with_category.bbox[1] as f32;
-                let width = annotation_with_category.bbox[2] as f32;
-                let height = annotation_with_category.bbox[3] as f32;
-                
-                // Transform from COCO coordinates (top-left origin) to Bevy coordinates (center-origin)
-                // Get image dimensions from DetailData
-                let img_width = detail_data.image_dimensions.x;
-                let img_height = detail_data.image_dimensions.y;
-                
-                // Transform X: subtract half image width to shift origin from left edge to center
-                let bevy_min_x = coco_x - (img_width / 2.0);
-                let bevy_max_x = (coco_x + width) - (img_width / 2.0);
-                
-                // Transform Y: flip Y axis and shift origin from top edge to center
-                // COCO Y increases downward, Bevy Y increases upward
-                let bevy_max_y = (img_height / 2.0) - coco_y;  // coco_y (top) becomes max_y in Bevy
-                let bevy_min_y = (img_height / 2.0) - (coco_y + height);  // coco_y + height (bottom) becomes min_y in Bevy
-                
-                let pos1 = Vec2::new(bevy_min_x, bevy_min_y);
-                let pos2 = Vec2::new(bevy_max_x, bevy_max_y);
-                
-                // Extract class from metadata if available
-                let class = if let Some(class_value) = annotation_with_category.metadata.get("class") {
-                    class_value.as_u64().unwrap_or(1) as usize
-                } else {
-                    1 // Default class
-                };
-                
-                let rectangle = Rectangle::new(class, pos1, pos2);
-                rectangles.0.push(rectangle);
-            }
-        }
-        
-        // Update text entities
-        update_text_entities(&mut commands, &mut detail_data, &rectangles);
-    }
     
     // Check if rectangles were sorted (order might have changed)
     if rect_count_before == rectangles.0.len() && rect_count_before > 0 {
