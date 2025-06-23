@@ -34,6 +34,143 @@ async fn cleanup_test_data(pool: &Pool<Postgres>, user_id: Uuid, project_id: Uui
 
 #[actix_web::test]
 #[serial]
+async fn test_sync_with_image_dimensions() {
+    let pool = test_utils::setup_test_db().await;
+    let user_id = Uuid::new_v4();
+    let project_id = Uuid::new_v4();
+    let unique_email = format!("test-{}@example.com", user_id);
+
+    // Create test user and project with local storage
+    sqlx::query!(
+        "INSERT INTO users (id, email, name, provider, provider_id) VALUES ($1, $2, $3, $4, $5)",
+        user_id,
+        unique_email,
+        "Test User",
+        "test",
+        user_id.to_string()
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to create test user");
+
+    // Create a temporary directory for testing
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let base_path = temp_dir.path().to_str().unwrap().to_string();
+
+    let storage_config = json!({
+        "type": "local",
+        "base_path": base_path
+    });
+
+    sqlx::query!(
+        "INSERT INTO projects (id, name, description, owner_id, storage_config) VALUES ($1, $2, $3, $4, $5)",
+        project_id,
+        "Test Project",
+        "Test project description",
+        user_id,
+        storage_config
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to create test project");
+
+    sqlx::query!(
+        "INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)",
+        project_id,
+        user_id,
+        "owner"
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to add user to project");
+
+    // Create a test image file (10x10 PNG) using the image crate
+    use image::{ImageBuffer, RgbImage};
+    let img: RgbImage = ImageBuffer::new(10, 10);
+    let image_path = temp_dir.path().join("test_image.png");
+    img.save(&image_path).expect("Failed to save test image");
+
+    // Also create a non-image file
+    let text_path = temp_dir.path().join("test_file.txt");
+    std::fs::write(&text_path, "test content").expect("Failed to write test file");
+
+    let config = crate::auth::OAuthConfig {
+        google_client_id: "test".to_string(),
+        google_client_secret: "test".to_string(),
+        google_redirect_url: "test".to_string(),
+        github_client_id: "test".to_string(),
+        github_client_secret: "test".to_string(),
+        github_redirect_url: "test".to_string(),
+        jwt_secret: "test_secret".to_string(),
+    };
+    
+    let token = create_test_jwt_token(user_id, &config);
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(pool.clone()))
+            .app_data(web::Data::new(config))
+            .route("/projects/{project_id}/sync", web::post().to(sync_storage_to_tasks))
+    ).await;
+
+    let req_body = json!({
+        "prefix": null,
+        "file_extensions": null,
+        "overwrite_existing": false
+    });
+
+    let req = test::TestRequest::post()
+        .uri(&format!("/projects/{}/sync", project_id))
+        .insert_header(("Authorization", format!("Bearer {}", token)))
+        .set_json(&req_body)
+        .to_request();
+
+    let resp = test::call_service(&app, req).await;
+    let status = resp.status();
+    if status != 200 {
+        let body = test::read_body(resp).await;
+        let body_str = std::str::from_utf8(&body).unwrap_or("Invalid UTF-8");
+        println!("Error response: {}", body_str);
+        panic!("Expected status 200, got {}", status);
+    }
+    assert_eq!(status, 200);
+
+    let body: serde_json::Value = test::read_body_json(resp).await;
+    assert!(body["tasks_created"].as_u64().unwrap() >= 1);
+
+    // Check that the image task has dimensions
+    let image_task = sqlx::query!(
+        "SELECT width, height FROM tasks WHERE project_id = $1 AND name = 'test_image'",
+        project_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("Failed to fetch task");
+
+    assert!(image_task.is_some());
+    let task = image_task.unwrap();
+    assert_eq!(task.width, Some(10));
+    assert_eq!(task.height, Some(10));
+
+    // Check that the text file task doesn't have dimensions
+    let text_task = sqlx::query!(
+        "SELECT width, height FROM tasks WHERE project_id = $1 AND name = 'test_file'",
+        project_id
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("Failed to fetch task");
+
+    if let Some(task) = text_task {
+        assert_eq!(task.width, None);
+        assert_eq!(task.height, None);
+    }
+
+    cleanup_test_data(&pool, user_id, project_id).await;
+}
+
+#[actix_web::test]
+#[serial]
 async fn test_sync_storage_to_tasks_success() {
     let pool = test_utils::setup_test_db().await;
     let (user_id, project_id) = test_utils::setup_test_user_and_project_with_sync_storage(&pool).await;
