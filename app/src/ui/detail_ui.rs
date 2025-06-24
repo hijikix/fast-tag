@@ -3,7 +3,7 @@ use bevy_egui::egui::scroll_area::ScrollBarVisibility;
 use bevy_egui::{EguiContexts, egui};
 use crate::core::rectangle::{Rectangle, rect_color};
 use crate::pages::detail::{
-    AnnotationState, CreateAnnotationRequest, AnnotationCategory, annotation_client,
+    AnnotationState, AnnotationCategory, annotation_client, BoundingBox,
 };
 use crate::auth::{AuthState, UserState, ProjectsState};
 
@@ -323,8 +323,8 @@ pub fn render_annotation_controls(
                 if let Some(token) = &auth_state.jwt {
                     if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
                         annotation_state.is_saving = true;
-                        let annotations = convert_rectangles_to_annotations(rectangles, &annotation_state.categories, image_dimensions);
-                        match annotation_client::save_annotations(project_id, task_id, annotations, token.clone()) {
+                        let bounding_boxes = convert_rectangles_to_annotations(rectangles, &annotation_state.categories, image_dimensions);
+                        match annotation_client::save_annotations(project_id, task_id, bounding_boxes, token.clone()) {
                             Ok(saved_annotations) => {
                                 annotation_state.is_saving = false;
                                 info!("Annotations saved successfully: {} annotations", saved_annotations.len());
@@ -341,7 +341,7 @@ pub fn render_annotation_controls(
             if ui.button("🔄 Reload Annotations").clicked() {
                 if let Some(token) = &auth_state.jwt {
                     if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
-                        match annotation_client::load_annotations(project_id, task_id, token.clone()) {
+                        match annotation_client::load_annotations(project_id, task_id, token.clone(), true) {
                             Ok(annotations) => {
                                 info!("Annotations loaded: {} annotations", annotations.len());
                                 info!("Loaded annotations JSON: {}", serde_json::to_string_pretty(&annotations).unwrap_or_else(|_| "Failed to serialize".to_string()));
@@ -414,7 +414,7 @@ pub fn render_annotation_controls(
     });
 }
 
-fn convert_rectangles_to_annotations(rectangles: &[Rectangle], categories: &[AnnotationCategory], image_dimensions: Vec2) -> Vec<CreateAnnotationRequest> {
+fn convert_rectangles_to_annotations(rectangles: &[Rectangle], categories: &[AnnotationCategory], image_dimensions: Vec2) -> Vec<BoundingBox> {
     let mut annotations = Vec::new();
     
     // Image dimensions
@@ -467,16 +467,11 @@ fn convert_rectangles_to_annotations(rectangles: &[Rectangle], categories: &[Ann
         
         let area = width * height;
         
-        annotations.push(CreateAnnotationRequest {
+        annotations.push(BoundingBox {
             category_id,
             bbox: vec![coco_min_x as f64, coco_min_y as f64, width as f64, height as f64],
             area: Some(area as f64),
             iscrowd: Some(false),
-            metadata: Some(serde_json::json!({
-                "class": rect.class,
-                "app_generated": true,
-                "category_mapped_from_class": rect.class
-            })),
         });
     }
     

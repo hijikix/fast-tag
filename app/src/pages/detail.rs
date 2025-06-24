@@ -11,7 +11,7 @@ use crate::ui::detail_ui;
 use crate::api::categories::CategoriesApi;
 use crate::api::annotations::AnnotationsApi;
 pub use crate::api::categories::AnnotationCategory;
-pub use crate::api::annotations::{AnnotationWithCategory, CreateAnnotationRequest};
+pub use crate::api::annotations::{AnnotationWithCategory, BoundingBox};
 use bevy::input::mouse::{MouseButtonInput, MouseWheel};
 use bevy::prelude::*;
 use bevy::text::Text2d;
@@ -128,7 +128,7 @@ pub fn setup(
                     
                     // Automatically load existing annotations
                     if let Some(task_id) = params.task_id {
-                        match annotation_client::load_annotations(project_id, task_id, token.to_string()) {
+                        match annotation_client::load_annotations(project_id, task_id, token.to_string(), true) {
                             Ok(annotations) => {
                                 info!("Automatically loaded {} annotations", annotations.len());
                                 info!("Auto-loaded annotations JSON: {}", serde_json::to_string_pretty(&annotations).unwrap_or_else(|_| "Failed to serialize".to_string()));
@@ -459,7 +459,7 @@ pub mod annotation_client {
     pub fn save_annotations(
         project_id: Uuid,
         task_id: Uuid,
-        annotations: Vec<CreateAnnotationRequest>,
+        bounding_boxes: Vec<BoundingBox>,
         token: String,
     ) -> Result<Vec<AnnotationWithCategory>, String> {
         let annotations_api = AnnotationsApi::new();
@@ -467,7 +467,7 @@ pub mod annotation_client {
             .map_err(|e| format!("Failed to create runtime: {}", e))?;
         
         runtime.block_on(async {
-            annotations_api.save_annotations(&token, project_id, task_id, &annotations).await
+            annotations_api.save_annotations(&token, project_id, task_id, &bounding_boxes).await
                 .map_err(|e| e.to_string())
         })
     }
@@ -476,13 +476,14 @@ pub mod annotation_client {
         project_id: Uuid,
         task_id: Uuid,
         token: String,
+        latest_only: bool,
     ) -> Result<Vec<AnnotationWithCategory>, String> {
         let annotations_api = AnnotationsApi::new();
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| format!("Failed to create runtime: {}", e))?;
         
         runtime.block_on(async {
-            annotations_api.list_annotations(&token, project_id, task_id).await
+            annotations_api.list_annotations_with_options(&token, project_id, task_id, latest_only).await
                 .map_err(|e| e.to_string())
         })
     }

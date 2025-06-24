@@ -174,9 +174,17 @@ async fn get_project_annotations_for_export(
     .fetch_all(pool)
     .await?;
 
-    // Then get all annotations with categories
+    // Then get latest annotations with categories for each task
     let annotation_rows = sqlx::query!(
         r#"
+        WITH latest_annotations AS (
+            SELECT 
+                id,
+                task_id,
+                ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at DESC) as rn
+            FROM annotations a2
+            WHERE task_id IN (SELECT id FROM tasks WHERE project_id = $1)
+        )
         SELECT 
             a.id as annotation_id,
             a.task_id,
@@ -185,11 +193,11 @@ async fn get_project_annotations_for_export(
             ia.iscrowd,
             iac.coco_id as category_coco_id,
             iac.id as category_id
-        FROM annotations a
+        FROM latest_annotations la
+        JOIN annotations a ON la.id = a.id
         JOIN image_annotations ia ON a.id = ia.annotation_id
         JOIN image_annotation_categories iac ON ia.category_id = iac.id
-        JOIN tasks t ON a.task_id = t.id
-        WHERE t.project_id = $1
+        WHERE la.rn = 1
         ORDER BY a.created_at
         "#,
         project_id

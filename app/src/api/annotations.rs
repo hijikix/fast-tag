@@ -54,17 +54,22 @@ pub struct AnnotationWithCategory {
 
 
 #[derive(Debug, Serialize, Clone)]
-pub struct CreateAnnotationRequest {
+pub struct BoundingBox {
     pub category_id: Uuid,
     pub bbox: Vec<f64>,
     pub area: Option<f64>,
     pub iscrowd: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CreateAnnotationRequest {
+    pub bboxes: Vec<BoundingBox>,
     pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AnnotationResponse {
-    pub annotation: AnnotationWithCategory,
+    pub annotations: Vec<AnnotationWithCategory>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,13 +88,27 @@ impl AnnotationsApi {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn list_annotations(
         &self,
         jwt: &str,
         project_id: Uuid,
         task_id: Uuid,
     ) -> ApiResult<Vec<AnnotationWithCategory>> {
-        let endpoint = format!("/projects/{}/tasks/{}/annotations", project_id, task_id);
+        self.list_annotations_with_options(jwt, project_id, task_id, false).await
+    }
+
+    pub async fn list_annotations_with_options(
+        &self,
+        jwt: &str,
+        project_id: Uuid,
+        task_id: Uuid,
+        latest_only: bool,
+    ) -> ApiResult<Vec<AnnotationWithCategory>> {
+        let mut endpoint = format!("/projects/{}/tasks/{}/annotations", project_id, task_id);
+        if latest_only {
+            endpoint.push_str("?latest_only=true");
+        }
         let response: AnnotationsListResponse = self.client.get(&endpoint, Some(jwt)).await?;
         Ok(response.annotations)
     }
@@ -100,12 +119,13 @@ impl AnnotationsApi {
         project_id: Uuid,
         task_id: Uuid,
         request: &CreateAnnotationRequest,
-    ) -> ApiResult<AnnotationWithCategory> {
+    ) -> ApiResult<Vec<AnnotationWithCategory>> {
         let endpoint = format!("/projects/{}/tasks/{}/annotations", project_id, task_id);
         let response: AnnotationResponse = self.client.post(&endpoint, request, Some(jwt)).await?;
-        Ok(response.annotation)
+        Ok(response.annotations)
     }
 
+    #[allow(dead_code)]
     pub async fn delete_annotation(
         &self,
         jwt: &str,
@@ -122,39 +142,25 @@ impl AnnotationsApi {
         jwt: &str,
         project_id: Uuid,
         task_id: Uuid,
-        annotations: &[CreateAnnotationRequest],
+        bounding_boxes: &[BoundingBox],
     ) -> ApiResult<Vec<AnnotationWithCategory>> {
-        // First, clear existing annotations
-        let existing = match self.list_annotations(jwt, project_id, task_id).await {
-            Ok(annotations) => annotations,
-            Err(e) => {
-                // If listing fails, it might be because there are no annotations yet
-                // Continue with empty list
-                println!("Warning: Failed to list existing annotations: {}", e);
-                Vec::new()
-            }
+        // Create new annotations without deleting existing ones to preserve history
+        if bounding_boxes.is_empty() {
+            return Ok(Vec::new());
+        }
+        
+        let request = CreateAnnotationRequest {
+            bboxes: bounding_boxes.to_vec(),
+            metadata: None,
         };
         
-        for existing_annotation in existing {
-            if let Err(e) = self.delete_annotation(jwt, project_id, task_id, existing_annotation.annotation_id).await {
-                println!("Warning: Failed to delete annotation {}: {}", existing_annotation.annotation_id, e);
-                // Continue with other deletions instead of failing completely
+        match self.create_annotation(jwt, project_id, task_id, &request).await {
+            Ok(saved) => Ok(saved),
+            Err(e) => {
+                println!("Failed to create annotations: {}", e);
+                Err(e)
             }
         }
-        
-        // Create new annotations
-        let mut saved_annotations = Vec::new();
-        for (i, annotation_request) in annotations.iter().enumerate() {
-            match self.create_annotation(jwt, project_id, task_id, annotation_request).await {
-                Ok(saved) => saved_annotations.push(saved),
-                Err(e) => {
-                    println!("Failed to create annotation {}: {}", i, e);
-                    return Err(e);
-                }
-            }
-        }
-        
-        Ok(saved_annotations)
     }
 }
 

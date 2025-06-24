@@ -173,22 +173,32 @@ async fn import_coco_data(
         }
     }
 
-    // Import annotations
+    // Group annotations by task to ensure only one annotation per task
+    let mut task_annotations: std::collections::HashMap<Uuid, Vec<(&CocoAnnotation, Uuid)>> = std::collections::HashMap::new();
+    
     for coco_annotation in &coco_data.annotations {
         if let (Some(&category_id), Some(&task_id)) = (
             category_mapping.get(&coco_annotation.category_id),
             image_mapping.get(&coco_annotation.image_id),
         ) {
-            match import_annotation(&mut tx, task_id, category_id, coco_annotation, user_id).await {
-                Ok(_) => {
-                    stats.annotations_created += 1;
-                }
-                Err(err) => {
-                    stats.errors.push(format!("Failed to import annotation {}: {}", coco_annotation.id, err));
-                }
-            }
+            task_annotations.entry(task_id).or_insert_with(Vec::new).push((coco_annotation, category_id));
         } else {
             stats.errors.push(format!("Annotation {} references invalid category or image", coco_annotation.id));
+        }
+    }
+
+    // Import annotations - one annotation per task with multiple image_annotations
+    for (task_id, annotations) in task_annotations {
+        println!("Processing task_id: {}, with {} COCO annotations", task_id, annotations.len());
+        match import_task_annotations(&mut tx, task_id, &annotations, user_id).await {
+            Ok(_annotation_count) => {
+                println!("Successfully created 1 annotation for task_id: {}", task_id);
+                stats.annotations_created += 1; // One annotation per task
+            }
+            Err(err) => {
+                println!("Failed to import annotations for task {}: {}", task_id, err);
+                stats.errors.push(format!("Failed to import annotations for task {}: {}", task_id, err));
+            }
         }
     }
 
@@ -310,18 +320,22 @@ async fn import_image_as_task(
     }
 }
 
-async fn import_annotation(
+async fn import_task_annotations(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     task_id: Uuid,
-    category_id: Uuid,
-    coco_annotation: &CocoAnnotation,
+    annotations: &[(&CocoAnnotation, Uuid)],
     user_id: Uuid,
-) -> Result<Uuid, sqlx::Error> {
+) -> Result<usize, sqlx::Error> {
     let annotation_id = Uuid::new_v4();
-    let image_annotation_id = Uuid::new_v4();
     let now = chrono::Utc::now();
 
-    // Create annotation
+    // Collect all original COCO IDs for metadata
+    let coco_ids: Vec<i64> = annotations.iter().map(|(ann, _)| ann.id).collect();
+    
+    println!("import_task_annotations: Creating annotation {} for task {}", annotation_id, task_id);
+    println!("import_task_annotations: Will create {} image_annotations", annotations.len());
+
+    // Create single annotation for this task
     sqlx::query!(
         r#"
         INSERT INTO annotations (id, task_id, metadata, annotated_by, annotated_at, created_at, updated_at)
@@ -329,7 +343,7 @@ async fn import_annotation(
         "#,
         annotation_id,
         task_id,
-        serde_json::json!({"imported_from_coco": true, "original_coco_id": coco_annotation.id}),
+        serde_json::json!({"imported_from_coco": true, "original_coco_ids": coco_ids}),
         user_id,
         now,
         now,
@@ -338,24 +352,28 @@ async fn import_annotation(
     .execute(&mut **tx)
     .await?;
 
-    // Create image annotation
-    sqlx::query!(
-        r#"
-        INSERT INTO image_annotations (id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        "#,
-        image_annotation_id,
-        annotation_id,
-        Some(category_id),
-        &coco_annotation.bbox,
-        Some(coco_annotation.area as f64),
-        coco_annotation.iscrowd == 1,
-        serde_json::json!({"imported_from_coco": true}),
-        now,
-        now
-    )
-    .execute(&mut **tx)
-    .await?;
+    // Create image annotations for each bounding box
+    for (coco_annotation, category_id) in annotations {
+        let image_annotation_id = Uuid::new_v4();
+        
+        sqlx::query!(
+            r#"
+            INSERT INTO image_annotations (id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "#,
+            image_annotation_id,
+            annotation_id,
+            Some(*category_id),
+            &coco_annotation.bbox,
+            Some(coco_annotation.area as f64),
+            coco_annotation.iscrowd == 1,
+            serde_json::json!({"imported_from_coco": true, "original_coco_id": coco_annotation.id}),
+            now,
+            now
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
 
-    Ok(annotation_id)
+    Ok(annotations.len())
 }
