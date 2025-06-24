@@ -113,7 +113,7 @@ async fn test_export_project_coco_with_data() {
     // Check annotation
     assert_eq!(body.annotations[0].category_id, 1);
     assert_eq!(body.annotations[0].bbox, vec![100.0, 50.0, 200.0, 150.0]);
-    assert_eq!(body.annotations[0].area, 30000.0);
+    assert_eq!(body.annotations[0].area, 30000);
     assert_eq!(body.annotations[0].iscrowd, 0);
 }
 
@@ -165,13 +165,20 @@ async fn test_import_project_coco_success() {
             "url": "https://example.com",
             "date_created": "2024-01-01T00:00:00Z"
         },
+        "licenses": [
+            {
+                "id": 1,
+                "name": "Test License",
+                "url": "https://example.com/license"
+            }
+        ],
         "images": [
             {
                 "id": 1,
                 "width": 640,
                 "height": 480,
                 "file_name": "test_image.jpg",
-                "license": null,
+                "license": 1,
                 "flickr_url": null,
                 "coco_url": "https://example.com/test_image.jpg",
                 "date_captured": "2024-01-01T00:00:00Z"
@@ -183,7 +190,7 @@ async fn test_import_project_coco_success() {
                 "image_id": 1,
                 "category_id": 1,
                 "segmentation": [],
-                "area": 30000.0,
+                "area": 30000,
                 "bbox": [100.0, 50.0, 200.0, 150.0],
                 "iscrowd": 0
             }

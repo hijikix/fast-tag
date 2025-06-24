@@ -3,12 +3,129 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres, Row};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
+use image::GenericImageView;
 
 use crate::auth::{JwtManager, Claims};
 use crate::storage::factory::create_storage_provider_from_project;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn test_is_image_file() {
+        // Test valid image extensions
+        assert!(is_image_file("test.jpg"));
+        assert!(is_image_file("test.JPEG"));
+        assert!(is_image_file("test.png"));
+        assert!(is_image_file("test.PNG"));
+        assert!(is_image_file("test.gif"));
+        assert!(is_image_file("test.bmp"));
+        assert!(is_image_file("test.webp"));
+        assert!(is_image_file("test.svg"));
+        assert!(is_image_file("test.ico"));
+        assert!(is_image_file("test.tiff"));
+        assert!(is_image_file("test.TIF"));
+        
+        // Test with paths
+        assert!(is_image_file("path/to/image.jpg"));
+        assert!(is_image_file("/absolute/path/to/image.PNG"));
+        
+        // Test non-image files
+        assert!(!is_image_file("test.txt"));
+        assert!(!is_image_file("test.pdf"));
+        assert!(!is_image_file("test.doc"));
+        assert!(!is_image_file("test"));
+        assert!(!is_image_file(""));
+        
+        // Test edge cases
+        assert!(!is_image_file(".jpg")); // Hidden file with jpg extension
+        assert!(is_image_file("file.with.multiple.dots.jpg"));
+    }
+
+    #[test]
+    fn test_extract_task_name_from_file() {
+        assert_eq!(extract_task_name_from_file("image.jpg"), "image");
+        assert_eq!(extract_task_name_from_file("path/to/image.png"), "image");
+        assert_eq!(extract_task_name_from_file("/absolute/path/image.gif"), "image");
+        assert_eq!(extract_task_name_from_file("file.with.dots.jpg"), "file.with.dots");
+        assert_eq!(extract_task_name_from_file("no_extension"), "no_extension");
+        assert_eq!(extract_task_name_from_file(""), "");
+        assert_eq!(extract_task_name_from_file("/path/to/.hidden"), ".hidden");
+    }
+
+    #[tokio::test]
+    async fn test_get_image_dimensions() {
+        use crate::storage::{StorageProvider, StorageError, StorageMetadata};
+        use async_trait::async_trait;
+        use image::{ImageBuffer, RgbImage};
+
+        // Mock storage provider for testing
+        struct MockStorageProvider {
+            should_fail: bool,
+        }
+
+        #[async_trait]
+        impl StorageProvider for MockStorageProvider {
+            async fn upload(&self, _key: &str, _data: &[u8], _content_type: Option<&str>) -> Result<String, StorageError> {
+                unimplemented!()
+            }
+
+            async fn download(&self, _key: &str) -> Result<Vec<u8>, StorageError> {
+                if self.should_fail {
+                    Err(StorageError::NotFound)
+                } else {
+                    // Create a valid 5x5 RGB PNG image using the image crate
+                    let img: RgbImage = ImageBuffer::new(5, 5);
+                    let mut buffer = Vec::new();
+                    img.write_to(&mut std::io::Cursor::new(&mut buffer), image::ImageFormat::Png)
+                        .expect("Failed to write PNG");
+                    Ok(buffer)
+                }
+            }
+
+            async fn get_presigned_url(&self, _key: &str, _expires_in_secs: u64) -> Result<String, StorageError> {
+                unimplemented!()
+            }
+
+            async fn delete(&self, _key: &str) -> Result<(), StorageError> {
+                unimplemented!()
+            }
+
+            async fn exists(&self, _key: &str) -> Result<bool, StorageError> {
+                unimplemented!()
+            }
+
+            async fn get_metadata(&self, _key: &str) -> Result<StorageMetadata, StorageError> {
+                unimplemented!()
+            }
+
+            async fn list_objects(&self, _prefix: Option<&str>) -> Result<Vec<String>, StorageError> {
+                unimplemented!()
+            }
+        }
+
+        // Test successful dimension retrieval
+        let provider = MockStorageProvider { should_fail: false };
+        let result = get_image_dimensions(&provider, "test.png").await;
+        if let Err(e) = &result {
+            println!("Error getting dimensions: {}", e);
+        }
+        assert!(result.is_ok());
+        let (width, height) = result.unwrap();
+        assert_eq!(width, 5);
+        assert_eq!(height, 5);
+
+        // Test download failure
+        let provider = MockStorageProvider { should_fail: true };
+        let result = get_image_dimensions(&provider, "test.png").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to download image"));
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SyncRequest {
@@ -141,7 +258,20 @@ pub async fn sync_storage_to_tasks(
             }
         }
 
-        match create_task_for_file(&pool, project_id, &task_name, &resource_url).await {
+        // Get image dimensions if it's an image file
+        let dimensions = if is_image_file(file_key) {
+            match get_image_dimensions(&*storage_provider, file_key).await {
+                Ok(dims) => Some(dims),
+                Err(e) => {
+                    errors.push(format!("Failed to get dimensions for {}: {}", file_key, e));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        match create_task_for_file(&pool, project_id, &task_name, &resource_url, dimensions).await {
             Ok(_) => tasks_created += 1,
             Err(e) => {
                 errors.push(format!("Failed to create task for {}: {}", file_key, e));
@@ -214,6 +344,33 @@ pub async fn get_sync_status(
         Ok(None) => HttpResponse::NotFound().json("Sync not found"),
         Err(_) => HttpResponse::InternalServerError().json("Failed to fetch sync status"),
     }
+}
+
+fn is_image_file(file_key: &str) -> bool {
+    if let Some(ext) = std::path::Path::new(file_key).extension() {
+        if let Some(ext_str) = ext.to_str() {
+            let image_extensions = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico", "tiff", "tif"];
+            return image_extensions.iter().any(|&img_ext| img_ext.eq_ignore_ascii_case(ext_str));
+        }
+    }
+    false
+}
+
+async fn get_image_dimensions(
+    storage_provider: &dyn crate::storage::StorageProvider,
+    file_key: &str,
+) -> Result<(u32, u32), String> {
+    // Download the image
+    let image_data = storage_provider.download(file_key)
+        .await
+        .map_err(|e| format!("Failed to download image: {}", e))?;
+    
+    // Load the image and get dimensions
+    let img = image::load_from_memory(&image_data)
+        .map_err(|e| format!("Failed to parse image: {}", e))?;
+    
+    let (width, height) = img.dimensions();
+    Ok((width, height))
 }
 
 async fn record_sync_start(
@@ -371,20 +528,23 @@ async fn create_task_for_file(
     project_id: Uuid,
     name: &str,
     resource_url: &str,
+    dimensions: Option<(u32, u32)>,
 ) -> Result<(), sqlx::Error> {
     let task_id = Uuid::new_v4();
     let now = Utc::now();
 
     sqlx::query(
         r#"
-        INSERT INTO tasks (id, project_id, name, resource_url, status, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, 'pending', $5, $6)
+        INSERT INTO tasks (id, project_id, name, resource_url, status, width, height, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, $8)
         "#
     )
     .bind(task_id)
     .bind(project_id)
     .bind(name)
     .bind(resource_url)
+    .bind(dimensions.map(|(w, _)| w as i32))
+    .bind(dimensions.map(|(_, h)| h as i32))
     .bind(now)
     .bind(now)
     .execute(pool)

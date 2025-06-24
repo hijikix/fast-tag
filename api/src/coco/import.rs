@@ -348,7 +348,7 @@ async fn import_annotation(
         annotation_id,
         Some(category_id),
         &coco_annotation.bbox,
-        Some(coco_annotation.area),
+        Some(coco_annotation.area as f64),
         coco_annotation.iscrowd == 1,
         serde_json::json!({"imported_from_coco": true}),
         now,

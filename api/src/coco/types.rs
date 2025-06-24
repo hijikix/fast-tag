@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CocoExport {
     pub info: CocoInfo,
+    pub licenses: Vec<CocoLicense>,
     pub images: Vec<CocoImage>,
     pub annotations: Vec<CocoAnnotation>,
     pub categories: Vec<CocoCategory>,
@@ -20,12 +21,19 @@ pub struct CocoInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct CocoLicense {
+    pub id: i32,
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CocoImage {
     pub id: i64,
-    pub width: Option<i32>,
-    pub height: Option<i32>,
+    pub width: i32,
+    pub height: i32,
     pub file_name: String,
-    pub license: Option<i32>,
+    pub license: i32,
     pub flickr_url: Option<String>,
     pub coco_url: Option<String>,
     pub date_captured: String,
@@ -37,7 +45,7 @@ pub struct CocoAnnotation {
     pub image_id: i64,
     pub category_id: i32,
     pub segmentation: Vec<Vec<f64>>,
-    pub area: f64,
+    pub area: i32,
     pub bbox: Vec<f64>,
     pub iscrowd: i32,
 }
@@ -54,6 +62,8 @@ pub struct CocoCategory {
 pub struct CocoImport {
     #[allow(dead_code)]
     pub info: Option<CocoInfo>,
+    #[allow(dead_code)]
+    pub licenses: Option<Vec<CocoLicense>>,
     pub images: Vec<CocoImage>,
     pub annotations: Vec<CocoAnnotation>,
     pub categories: Vec<CocoCategory>,

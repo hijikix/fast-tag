@@ -2,9 +2,10 @@ use actix_web::{web, HttpResponse, Responder, HttpRequest};
 use sqlx::{Pool, Postgres};
 use uuid::Uuid;
 use chrono::{Datelike, Utc};
+use serde::Serialize;
 
 use crate::auth::{JwtManager, Claims};
-use super::types::{CocoExport, CocoInfo, CocoImage, CocoAnnotation, CocoCategory};
+use super::types::{CocoExport, CocoInfo, CocoLicense, CocoImage, CocoAnnotation, CocoCategory};
 
 pub async fn export_project_coco(
     req: HttpRequest,
@@ -62,6 +63,11 @@ pub async fn export_project_coco(
             url: "https://fast-tag.com".to_string(),
             date_created: Utc::now().to_rfc3339(),
         },
+        licenses: vec![CocoLicense {
+            id: 1,
+            name: "Unknown License".to_string(),
+            url: "https://fast-tag.com/license".to_string(),
+        }],
         images,
         annotations,
         categories,
@@ -74,9 +80,15 @@ pub async fn export_project_coco(
     );
 
     // Return JSON file as download with 2-space indentation
-    let pretty_json = match serde_json::to_string_pretty(&coco_export) {
-        Ok(json) => json.replace("    ", "  "), // Convert 4-space indent to 2-space indent
-        Err(_) => return HttpResponse::InternalServerError().json("Failed to serialize JSON"),
+    let pretty_json = {
+        let mut pretty = serde_json::Serializer::with_formatter(
+            Vec::new(),
+            serde_json::ser::PrettyFormatter::with_indent(b"  ")
+        );
+        match coco_export.serialize(&mut pretty) {
+            Ok(_) => String::from_utf8_lossy(&pretty.into_inner()).to_string(),
+            Err(_) => return HttpResponse::InternalServerError().json("Failed to serialize JSON"),
+        }
     };
     
     HttpResponse::Ok()
@@ -152,7 +164,7 @@ async fn get_project_annotations_for_export(
     // First, get all tasks for the project
     let tasks = sqlx::query!(
         r#"
-        SELECT id, name, resource_url, created_at
+        SELECT id, name, resource_url, created_at, width, height
         FROM tasks
         WHERE project_id = $1
         ORDER BY created_at
@@ -208,10 +220,10 @@ async fn get_project_annotations_for_export(
 
         images.push(CocoImage {
             id: image_id,
-            width: None, // Can be added later if we store image dimensions
-            height: None,
+            width: task.width.unwrap_or(0),
+            height: task.height.unwrap_or(0),
             file_name,
-            license: None,
+            license: 1, // Default license ID
             flickr_url: None,
             coco_url: task.resource_url,
             date_captured: task.created_at.map(|dt| dt.to_rfc3339()).unwrap_or_default(),
@@ -242,7 +254,7 @@ async fn get_project_annotations_for_export(
                 } else {
                     0.0
                 }
-            }) as f64;
+            }) as i32;
 
             annotations.push(CocoAnnotation {
                 id: annotation_id_counter,
