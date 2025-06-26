@@ -78,7 +78,13 @@ async fn test_export_project_coco_with_data() {
     let task = crate::tasks::create_task_in_db(&pool, project.id, "image1.jpg", Some("https://example.com/image1.jpg")).await.unwrap();
     
     // Create annotation
-    crate::annotations::create_annotation_in_db(&pool, task.id, category.id, &[100.0, 50.0, 200.0, 150.0], Some(30000.0), false, &serde_json::json!({}), user.id).await.unwrap();
+    let bbox = crate::annotations::BoundingBox {
+        category_id: category.id,
+        bbox: vec![100.0, 50.0, 200.0, 150.0],
+        area: Some(30000.0),
+        iscrowd: Some(false),
+    };
+    crate::annotations::create_annotation_in_db(&pool, task.id, &[bbox], &serde_json::json!({}), user.id).await.unwrap();
 
     let app = test::init_service(
         App::new()
@@ -115,6 +121,69 @@ async fn test_export_project_coco_with_data() {
     assert_eq!(body.annotations[0].bbox, vec![100.0, 50.0, 200.0, 150.0]);
     assert_eq!(body.annotations[0].area, 30000);
     assert_eq!(body.annotations[0].iscrowd, 0);
+}
+
+#[actix_web::test]
+#[serial]
+async fn test_export_project_coco_latest_annotations_only() {
+    let pool = test_utils::setup_test_db().await;
+    let user = test_utils::create_test_user_with_details(&pool).await;
+    let oauth_config = create_test_oauth_config();
+    let token = create_auth_token(&oauth_config, &user);
+    let auth_storage = AuthStorage::new(pool.clone());
+
+    // Create test data
+    let project = crate::projects::create_project_in_db(&pool, "Test Project", Some("Description"), None, user.id).await.unwrap();
+    let category = crate::image_annotation_categories::create_image_annotation_category_in_db(&pool, project.id, "person", None, Some("human"), Some("#FF0000"), Some(1)).await.unwrap();
+    let task = crate::tasks::create_task_in_db(&pool, project.id, "image1.jpg", Some("https://example.com/image1.jpg")).await.unwrap();
+    
+    // Create first annotation (older)
+    let bbox1 = crate::annotations::BoundingBox {
+        category_id: category.id,
+        bbox: vec![100.0, 50.0, 200.0, 150.0],
+        area: Some(30000.0),
+        iscrowd: Some(false),
+    };
+    crate::annotations::create_annotation_in_db(&pool, task.id, &[bbox1], &serde_json::json!({"version": "old"}), user.id).await.unwrap();
+
+    // Wait a moment to ensure different timestamps
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+    // Create second annotation (newer) - this should be the one exported
+    let bbox2 = crate::annotations::BoundingBox {
+        category_id: category.id,
+        bbox: vec![150.0, 75.0, 250.0, 175.0],
+        area: Some(43750.0),
+        iscrowd: Some(false),
+    };
+    crate::annotations::create_annotation_in_db(&pool, task.id, &[bbox2], &serde_json::json!({"version": "new"}), user.id).await.unwrap();
+
+    let app = test::init_service(
+        App::new()
+            .app_data(web::Data::new(pool.clone()))
+            .app_data(web::Data::new(oauth_config))
+            .app_data(web::Data::new(auth_storage))
+            .route("/projects/{project_id}/export/coco", web::get().to(export_project_coco))
+    ).await;
+
+    let req = test::TestRequest::get()
+        .uri(&format!("/projects/{}/export/coco", project.id))
+        .insert_header(("Authorization", format!("Bearer {}", token)))
+        .to_request();
+
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), 200);
+
+    let body: types::CocoExport = test::read_body_json(resp).await;
+    
+    // Should have 1 image and only 1 annotation (the latest one)
+    assert_eq!(body.images.len(), 1);
+    assert_eq!(body.annotations.len(), 1);
+    assert_eq!(body.categories.len(), 1);
+
+    // Check that the exported annotation is the latest one (bbox2 coordinates)
+    assert_eq!(body.annotations[0].bbox, vec![150.0, 75.0, 250.0, 175.0]);
+    assert_eq!(body.annotations[0].area, 43750);
 }
 
 #[actix_web::test]

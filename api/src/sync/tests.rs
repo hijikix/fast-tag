@@ -140,7 +140,7 @@ async fn test_sync_with_image_dimensions() {
 
     // Check that the image task has dimensions
     let image_task = sqlx::query!(
-        "SELECT width, height FROM tasks WHERE project_id = $1 AND name = 'test_image'",
+        "SELECT width, height FROM tasks WHERE project_id = $1 AND name = 'test_image.png'",
         project_id
     )
     .fetch_optional(&pool)
@@ -154,7 +154,7 @@ async fn test_sync_with_image_dimensions() {
 
     // Check that the text file task doesn't have dimensions
     let text_task = sqlx::query!(
-        "SELECT width, height FROM tasks WHERE project_id = $1 AND name = 'test_file'",
+        "SELECT width, height FROM tasks WHERE project_id = $1 AND name = 'test_file.txt'",
         project_id
     )
     .fetch_optional(&pool)

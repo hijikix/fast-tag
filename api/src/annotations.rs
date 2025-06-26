@@ -50,26 +50,28 @@ pub struct AnnotationWithCategory {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CreateAnnotationRequest {
+pub struct BoundingBox {
     pub category_id: Uuid,
     pub bbox: Vec<f64>, // [x, y, width, height]
     pub area: Option<f64>,
     pub iscrowd: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateAnnotationRequest {
+    pub bboxes: Vec<BoundingBox>,
     pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateAnnotationRequest {
-    pub category_id: Uuid,
-    pub bbox: Vec<f64>, // [x, y, width, height]
-    pub area: Option<f64>,
-    pub iscrowd: Option<bool>,
+    pub bboxes: Vec<BoundingBox>,
     pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct AnnotationResponse {
-    pub annotation: AnnotationWithCategory,
+    pub annotations: Vec<AnnotationWithCategory>,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,14 +108,20 @@ pub async fn create_annotation(
         Err(_) => return HttpResponse::BadRequest().json("Invalid task ID"),
     };
 
-    // Validate bbox format
-    if payload.bbox.len() != 4 {
-        return HttpResponse::BadRequest().json("bbox must have exactly 4 values [x, y, width, height]");
+    // Validate bboxes format
+    if payload.bboxes.is_empty() {
+        return HttpResponse::BadRequest().json("At least one bounding box is required");
     }
 
-    for &value in &payload.bbox {
-        if value < 0.0 {
-            return HttpResponse::BadRequest().json("bbox values must be non-negative");
+    for bbox in &payload.bboxes {
+        if bbox.bbox.len() != 4 {
+            return HttpResponse::BadRequest().json("Each bbox must have exactly 4 values [x, y, width, height]");
+        }
+
+        for &value in &bbox.bbox {
+            if value < 0.0 {
+                return HttpResponse::BadRequest().json("bbox values must be non-negative");
+            }
         }
     }
 
@@ -127,31 +135,23 @@ pub async fn create_annotation(
         return HttpResponse::BadRequest().json("Task does not belong to the specified project");
     }
 
-    // Verify category belongs to the project
-    if !category_belongs_to_project(&pool, payload.category_id, project_id).await {
-        return HttpResponse::BadRequest().json("Category does not belong to the specified project");
+    // Verify all categories belong to the project
+    for bbox in &payload.bboxes {
+        if !category_belongs_to_project(&pool, bbox.category_id, project_id).await {
+            return HttpResponse::BadRequest().json("One or more categories do not belong to the specified project");
+        }
     }
 
-    // Calculate area if not provided
-    let calculated_area = payload.area.unwrap_or_else(|| {
-        let width = payload.bbox[2];
-        let height = payload.bbox[3];
-        width * height
-    });
-
-    // Create annotation
+    // Create annotation with multiple bounding boxes
     match create_annotation_in_db(
         &pool,
         task_id,
-        payload.category_id,
-        &payload.bbox,
-        Some(calculated_area),
-        payload.iscrowd.unwrap_or(false),
+        &payload.bboxes,
         payload.metadata.as_ref().unwrap_or(&serde_json::json!({})),
         user_id,
     ).await {
-        Ok(annotation_with_category) => HttpResponse::Created().json(AnnotationResponse { 
-            annotation: annotation_with_category 
+        Ok(annotations) => HttpResponse::Created().json(AnnotationResponse { 
+            annotations 
         }),
         Err(_) => HttpResponse::InternalServerError().json("Failed to create annotation"),
     }
@@ -160,6 +160,7 @@ pub async fn create_annotation(
 pub async fn list_annotations(
     req: HttpRequest,
     path: web::Path<(String, String)>,
+    query: web::Query<std::collections::HashMap<String, String>>,
     pool: web::Data<Pool<Postgres>>,
     config: web::Data<crate::auth::OAuthConfig>,
 ) -> impl Responder {
@@ -195,8 +196,11 @@ pub async fn list_annotations(
         return HttpResponse::BadRequest().json("Task does not belong to the specified project");
     }
 
+    // Check if latest_only flag is set
+    let latest_only = query.get("latest_only").map(|v| v == "true").unwrap_or(false);
+
     // Get task's annotations
-    match get_task_annotations(&pool, task_id).await {
+    match get_task_annotations(&pool, task_id, latest_only).await {
         Ok(annotations) => HttpResponse::Ok().json(AnnotationsListResponse { annotations }),
         Err(_) => HttpResponse::InternalServerError().json("Failed to fetch annotations"),
     }
@@ -247,7 +251,7 @@ pub async fn get_annotation(
 
     // Get annotation
     match get_annotation_by_id(&pool, annotation_id, task_id).await {
-        Ok(Some(annotation)) => HttpResponse::Ok().json(AnnotationResponse { annotation }),
+        Ok(Some(annotations)) => HttpResponse::Ok().json(AnnotationResponse { annotations }),
         Ok(None) => HttpResponse::NotFound().json("Annotation not found"),
         Err(_) => HttpResponse::InternalServerError().json("Failed to fetch annotation"),
     }
@@ -287,14 +291,20 @@ pub async fn update_annotation(
         Err(_) => return HttpResponse::BadRequest().json("Invalid annotation ID"),
     };
 
-    // Validate bbox format
-    if payload.bbox.len() != 4 {
-        return HttpResponse::BadRequest().json("bbox must have exactly 4 values [x, y, width, height]");
+    // Validate bboxes format
+    if payload.bboxes.is_empty() {
+        return HttpResponse::BadRequest().json("At least one bounding box is required");
     }
 
-    for &value in &payload.bbox {
-        if value < 0.0 {
-            return HttpResponse::BadRequest().json("bbox values must be non-negative");
+    for bbox in &payload.bboxes {
+        if bbox.bbox.len() != 4 {
+            return HttpResponse::BadRequest().json("Each bbox must have exactly 4 values [x, y, width, height]");
+        }
+
+        for &value in &bbox.bbox {
+            if value < 0.0 {
+                return HttpResponse::BadRequest().json("bbox values must be non-negative");
+            }
         }
     }
 
@@ -308,30 +318,22 @@ pub async fn update_annotation(
         return HttpResponse::BadRequest().json("Task does not belong to the specified project");
     }
 
-    // Verify category belongs to the project
-    if !category_belongs_to_project(&pool, payload.category_id, project_id).await {
-        return HttpResponse::BadRequest().json("Category does not belong to the specified project");
+    // Verify all categories belong to the project
+    for bbox in &payload.bboxes {
+        if !category_belongs_to_project(&pool, bbox.category_id, project_id).await {
+            return HttpResponse::BadRequest().json("One or more categories do not belong to the specified project");
+        }
     }
 
-    // Calculate area if not provided
-    let calculated_area = payload.area.unwrap_or_else(|| {
-        let width = payload.bbox[2];
-        let height = payload.bbox[3];
-        width * height
-    });
-
-    // Update annotation
+    // Update annotation with multiple bounding boxes
     match update_annotation_in_db(
         &pool,
         annotation_id,
         task_id,
-        Some(payload.category_id),
-        &payload.bbox,
-        Some(calculated_area),
-        payload.iscrowd.unwrap_or(false),
+        &payload.bboxes,
         payload.metadata.as_ref().unwrap_or(&serde_json::json!({})),
     ).await {
-        Ok(Some(annotation)) => HttpResponse::Ok().json(AnnotationResponse { annotation }),
+        Ok(Some(annotations)) => HttpResponse::Ok().json(AnnotationResponse { annotations }),
         Ok(None) => HttpResponse::NotFound().json("Annotation not found"),
         Err(_) => HttpResponse::InternalServerError().json("Failed to update annotation"),
     }
@@ -391,18 +393,18 @@ pub async fn delete_annotation(
 pub async fn create_annotation_in_db(
     pool: &Pool<Postgres>,
     task_id: Uuid,
-    category_id: Uuid,
-    bbox: &[f64],
-    area: Option<f64>,
-    iscrowd: bool,
+    bboxes: &[BoundingBox],
     metadata: &serde_json::Value,
     annotated_by: Uuid,
-) -> Result<AnnotationWithCategory, sqlx::Error> {
+) -> Result<Vec<AnnotationWithCategory>, sqlx::Error> {
+    if bboxes.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let annotation_id = Uuid::new_v4();
-    let image_annotation_id = Uuid::new_v4();
     let now = Utc::now();
 
-    // Create annotation
+    // Create single annotation (always creates new annotation to preserve history)
     let annotation = sqlx::query_as::<_, Annotation>(
         r#"
         INSERT INTO annotations (id, task_id, metadata, annotated_by, annotated_at, created_at, updated_at)
@@ -420,57 +422,157 @@ pub async fn create_annotation_in_db(
     .fetch_one(pool)
     .await?;
 
-    // Create image annotation
-    let image_annotation = sqlx::query_as::<_, ImageAnnotation>(
-        r#"
-        INSERT INTO image_annotations (id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        RETURNING id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at
-        "#
-    )
-    .bind(image_annotation_id)
-    .bind(annotation_id)
-    .bind(Some(category_id))
-    .bind(bbox)
-    .bind(area)
-    .bind(iscrowd)
-    .bind(&serde_json::json!({}))
-    .bind(now)
-    .bind(now)
-    .fetch_one(pool)
-    .await?;
+    let mut result = Vec::new();
 
-    // Get category info from image_annotation_categories
-    let category = sqlx::query!(
-        "SELECT name, color FROM image_annotation_categories WHERE id = $1",
-        category_id
-    )
-    .fetch_one(pool)
-    .await?;
+    // Create multiple image annotations for each bounding box
+    for bbox in bboxes {
+        let image_annotation_id = Uuid::new_v4();
+        
+        // Calculate area if not provided
+        let calculated_area = bbox.area.unwrap_or_else(|| {
+            if bbox.bbox.len() >= 4 {
+                let width = bbox.bbox[2];
+                let height = bbox.bbox[3];
+                width * height
+            } else {
+                0.0
+            }
+        });
 
-    Ok(AnnotationWithCategory {
-        id: image_annotation.id,
-        task_id: annotation.task_id,
-        metadata: annotation.metadata,
-        annotated_by: annotation.annotated_by,
-        annotated_at: annotation.annotated_at,
-        created_at: annotation.created_at,
-        updated_at: annotation.updated_at,
-        annotation_id: annotation.id,
-        category_id: image_annotation.category_id,
-        bbox: image_annotation.bbox,
-        area: image_annotation.area,
-        iscrowd: image_annotation.iscrowd,
-        image_metadata: image_annotation.image_metadata,
-        category_name: category.name,
-        category_color: category.color,
-    })
+        let image_annotation = sqlx::query_as::<_, ImageAnnotation>(
+            r#"
+            INSERT INTO image_annotations (id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at
+            "#
+        )
+        .bind(image_annotation_id)
+        .bind(annotation_id)
+        .bind(Some(bbox.category_id))
+        .bind(&bbox.bbox)
+        .bind(Some(calculated_area))
+        .bind(bbox.iscrowd.unwrap_or(false))
+        .bind(&serde_json::json!({}))
+        .bind(now)
+        .bind(now)
+        .fetch_one(pool)
+        .await?;
+
+        // Get category info from image_annotation_categories
+        let category = sqlx::query!(
+            "SELECT name, color FROM image_annotation_categories WHERE id = $1",
+            bbox.category_id
+        )
+        .fetch_one(pool)
+        .await?;
+
+        result.push(AnnotationWithCategory {
+            id: image_annotation.id,
+            task_id: annotation.task_id,
+            metadata: annotation.metadata.clone(),
+            annotated_by: annotation.annotated_by,
+            annotated_at: annotation.annotated_at,
+            created_at: annotation.created_at,
+            updated_at: annotation.updated_at,
+            annotation_id: annotation.id,
+            category_id: image_annotation.category_id,
+            bbox: image_annotation.bbox,
+            area: image_annotation.area,
+            iscrowd: image_annotation.iscrowd,
+            image_metadata: image_annotation.image_metadata,
+            category_name: category.name,
+            category_color: category.color,
+        });
+    }
+
+    Ok(result)
 }
 
 async fn get_task_annotations(
     pool: &Pool<Postgres>,
     task_id: Uuid,
+    latest_only: bool,
 ) -> Result<Vec<AnnotationWithCategory>, sqlx::Error> {
+    let mut where_clause = "WHERE a.task_id = $1".to_string();
+    
+    if latest_only {
+        where_clause.push_str(" AND a.id = (SELECT id FROM annotations WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1)");
+    }
+    
+    let query = format!(
+        r#"
+        SELECT 
+            a.id, a.task_id, a.metadata, a.annotated_by, a.annotated_at, a.created_at, a.updated_at,
+            ia.id as image_id, ia.annotation_id, ia.category_id, ia.bbox, ia.area, ia.iscrowd, ia.image_metadata, ia.created_at as image_created_at, ia.updated_at as image_updated_at,
+            COALESCE(iac.name, 'Unknown') as category_name,
+            iac.color as category_color
+        FROM annotations a
+        JOIN image_annotations ia ON a.id = ia.annotation_id
+        LEFT JOIN image_annotation_categories iac ON ia.category_id = iac.id
+        {}
+        ORDER BY a.created_at ASC
+        "#,
+        where_clause
+    );
+
+    let rows = sqlx::query(&query)
+        .bind(task_id)
+        .fetch_all(pool)
+        .await?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        use sqlx::Row;
+        
+        let annotation = Annotation {
+            id: row.get("id"),
+            task_id: row.get("task_id"),
+            metadata: row.get::<Option<serde_json::Value>, _>("metadata").unwrap_or_else(|| serde_json::json!({})),
+            annotated_by: row.get("annotated_by"),
+            annotated_at: row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("annotated_at").unwrap_or_else(|| row.get("created_at")),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        };
+
+        let image_annotation = ImageAnnotation {
+            id: row.get("image_id"),
+            annotation_id: row.get("annotation_id"),
+            category_id: row.get("category_id"),
+            bbox: row.get("bbox"),
+            area: row.get("area"),
+            iscrowd: row.get::<Option<bool>, _>("iscrowd").unwrap_or(false),
+            image_metadata: row.get::<Option<serde_json::Value>, _>("image_metadata").unwrap_or_else(|| serde_json::json!({})),
+            created_at: row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("image_created_at").unwrap_or_else(|| row.get("created_at")),
+            updated_at: row.get::<Option<chrono::DateTime<chrono::Utc>>, _>("image_updated_at").unwrap_or_else(|| row.get("updated_at")),
+        };
+
+        result.push(AnnotationWithCategory {
+            id: image_annotation.id,
+            task_id: annotation.task_id,
+            metadata: annotation.metadata,
+            annotated_by: annotation.annotated_by,
+            annotated_at: annotation.annotated_at,
+            created_at: annotation.created_at,
+            updated_at: annotation.updated_at,
+            annotation_id: annotation.id,
+            category_id: image_annotation.category_id,
+            bbox: image_annotation.bbox,
+            area: image_annotation.area,
+            iscrowd: image_annotation.iscrowd,
+            image_metadata: image_annotation.image_metadata,
+            category_name: row.get::<Option<String>, _>("category_name").unwrap_or_else(|| "Unknown".to_string()),
+            category_color: row.get("category_color"),
+        });
+    }
+
+    Ok(result)
+}
+
+async fn get_annotation_by_id(
+    pool: &Pool<Postgres>,
+    annotation_id: Uuid,
+    task_id: Uuid,
+) -> Result<Option<Vec<AnnotationWithCategory>>, sqlx::Error> {
     let rows = sqlx::query!(
         r#"
         SELECT 
@@ -481,13 +583,18 @@ async fn get_task_annotations(
         FROM annotations a
         JOIN image_annotations ia ON a.id = ia.annotation_id
         LEFT JOIN image_annotation_categories iac ON ia.category_id = iac.id
-        WHERE a.task_id = $1
-        ORDER BY a.created_at ASC
+        WHERE a.id = $1 AND a.task_id = $2
+        ORDER BY ia.created_at ASC
         "#,
+        annotation_id,
         task_id
     )
     .fetch_all(pool)
     .await?;
+
+    if rows.is_empty() {
+        return Ok(None);
+    }
 
     let mut result = Vec::new();
     for row in rows {
@@ -532,86 +639,16 @@ async fn get_task_annotations(
         });
     }
 
-    Ok(result)
-}
-
-async fn get_annotation_by_id(
-    pool: &Pool<Postgres>,
-    annotation_id: Uuid,
-    task_id: Uuid,
-) -> Result<Option<AnnotationWithCategory>, sqlx::Error> {
-    let row = match sqlx::query!(
-        r#"
-        SELECT 
-            a.id, a.task_id, a.metadata, a.annotated_by, a.annotated_at, a.created_at, a.updated_at,
-            ia.id as image_id, ia.annotation_id, ia.category_id, ia.bbox, ia.area, ia.iscrowd, ia.image_metadata, ia.created_at as image_created_at, ia.updated_at as image_updated_at,
-            COALESCE(iac.name, 'Unknown') as category_name,
-            iac.color as category_color
-        FROM annotations a
-        JOIN image_annotations ia ON a.id = ia.annotation_id
-        LEFT JOIN image_annotation_categories iac ON ia.category_id = iac.id
-        WHERE a.id = $1 AND a.task_id = $2
-        "#,
-        annotation_id,
-        task_id
-    )
-    .fetch_optional(pool)
-    .await? {
-        Some(row) => row,
-        None => return Ok(None),
-    };
-
-    let annotation = Annotation {
-        id: row.id,
-        task_id: row.task_id,
-        metadata: row.metadata.unwrap_or_else(|| serde_json::json!({})),
-        annotated_by: row.annotated_by,
-        annotated_at: row.annotated_at.unwrap_or_else(|| row.created_at.unwrap()),
-        created_at: row.created_at.unwrap(),
-        updated_at: row.updated_at.unwrap(),
-    };
-
-    let image_annotation = ImageAnnotation {
-        id: row.image_id,
-        annotation_id: row.annotation_id,
-        category_id: row.category_id,
-        bbox: row.bbox,
-        area: row.area,
-        iscrowd: row.iscrowd.unwrap_or(false),
-        image_metadata: row.image_metadata.unwrap_or_else(|| serde_json::json!({})),
-        created_at: row.image_created_at.unwrap_or_else(|| row.created_at.unwrap()),
-        updated_at: row.image_updated_at.unwrap_or_else(|| row.updated_at.unwrap()),
-    };
-
-    Ok(Some(AnnotationWithCategory {
-        id: image_annotation.id,
-        task_id: annotation.task_id,
-        metadata: annotation.metadata,
-        annotated_by: annotation.annotated_by,
-        annotated_at: annotation.annotated_at,
-        created_at: annotation.created_at,
-        updated_at: annotation.updated_at,
-        annotation_id: annotation.id,
-        category_id: image_annotation.category_id,
-        bbox: image_annotation.bbox,
-        area: image_annotation.area,
-        iscrowd: image_annotation.iscrowd,
-        image_metadata: image_annotation.image_metadata,
-        category_name: row.category_name.unwrap_or("Unknown".to_string()),
-        category_color: row.category_color,
-    }))
+    Ok(Some(result))
 }
 
 async fn update_annotation_in_db(
     pool: &Pool<Postgres>,
     annotation_id: Uuid,
     task_id: Uuid,
-    category_id: Option<Uuid>,
-    bbox: &[f64],
-    area: Option<f64>,
-    iscrowd: bool,
+    bboxes: &[BoundingBox],
     metadata: &serde_json::Value,
-) -> Result<Option<AnnotationWithCategory>, sqlx::Error> {
+) -> Result<Option<Vec<AnnotationWithCategory>>, sqlx::Error> {
     let now = Utc::now();
 
     // Update annotation
@@ -633,58 +670,75 @@ async fn update_annotation_in_db(
         None => return Ok(None),
     };
 
-    // Update image annotation
-    let image_annotation = sqlx::query_as::<_, ImageAnnotation>(
-        r#"
-        UPDATE image_annotations 
-        SET category_id = $1, bbox = $2, area = $3, iscrowd = $4, updated_at = $5
-        WHERE annotation_id = $6
-        RETURNING id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at
-        "#
-    )
-    .bind(category_id)
-    .bind(bbox)
-    .bind(area)
-    .bind(iscrowd)
-    .bind(now)
-    .bind(annotation_id)
-    .fetch_one(pool)
-    .await?;
+    // Delete existing image annotations
+    sqlx::query!("DELETE FROM image_annotations WHERE annotation_id = $1", annotation_id)
+        .execute(pool)
+        .await?;
 
-    // Get category info from image_annotation_categories if category_id exists
-    let (category_name, category_color) = if let Some(cat_id) = image_annotation.category_id {
+    let mut result = Vec::new();
+
+    // Create new image annotations for each bounding box
+    for bbox in bboxes {
+        let image_annotation_id = Uuid::new_v4();
+        
+        // Calculate area if not provided
+        let calculated_area = bbox.area.unwrap_or_else(|| {
+            if bbox.bbox.len() >= 4 {
+                let width = bbox.bbox[2];
+                let height = bbox.bbox[3];
+                width * height
+            } else {
+                0.0
+            }
+        });
+
+        let image_annotation = sqlx::query_as::<_, ImageAnnotation>(
+            r#"
+            INSERT INTO image_annotations (id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id, annotation_id, category_id, bbox, area, iscrowd, image_metadata, created_at, updated_at
+            "#
+        )
+        .bind(image_annotation_id)
+        .bind(annotation_id)
+        .bind(Some(bbox.category_id))
+        .bind(&bbox.bbox)
+        .bind(Some(calculated_area))
+        .bind(bbox.iscrowd.unwrap_or(false))
+        .bind(&serde_json::json!({}))
+        .bind(now)
+        .bind(now)
+        .fetch_one(pool)
+        .await?;
+
+        // Get category info from image_annotation_categories
         let category = sqlx::query!(
             "SELECT name, color FROM image_annotation_categories WHERE id = $1",
-            cat_id
+            bbox.category_id
         )
-        .fetch_optional(pool)
+        .fetch_one(pool)
         .await?;
-        
-        match category {
-            Some(cat) => (cat.name, cat.color),
-            None => ("Unknown".to_string(), None),
-        }
-    } else {
-        ("Unknown".to_string(), None)
-    };
 
-    Ok(Some(AnnotationWithCategory {
-        id: image_annotation.id,
-        task_id: annotation.task_id,
-        metadata: annotation.metadata,
-        annotated_by: annotation.annotated_by,
-        annotated_at: annotation.annotated_at,
-        created_at: annotation.created_at,
-        updated_at: annotation.updated_at,
-        annotation_id: annotation.id,
-        category_id: image_annotation.category_id,
-        bbox: image_annotation.bbox,
-        area: image_annotation.area,
-        iscrowd: image_annotation.iscrowd,
-        image_metadata: image_annotation.image_metadata,
-        category_name,
-        category_color,
-    }))
+        result.push(AnnotationWithCategory {
+            id: image_annotation.id,
+            task_id: annotation.task_id,
+            metadata: annotation.metadata.clone(),
+            annotated_by: annotation.annotated_by,
+            annotated_at: annotation.annotated_at,
+            created_at: annotation.created_at,
+            updated_at: annotation.updated_at,
+            annotation_id: annotation.id,
+            category_id: image_annotation.category_id,
+            bbox: image_annotation.bbox,
+            area: image_annotation.area,
+            iscrowd: image_annotation.iscrowd,
+            image_metadata: image_annotation.image_metadata,
+            category_name: category.name,
+            category_color: category.color,
+        });
+    }
+
+    Ok(Some(result))
 }
 
 async fn delete_annotation_from_db(
@@ -817,10 +871,12 @@ mod tests {
         ).await;
 
         let create_request = CreateAnnotationRequest {
-            category_id: category.id,
-            bbox: vec![100.0, 50.0, 200.0, 150.0], // [x, y, width, height]
-            area: Some(30000.0),
-            iscrowd: Some(false),
+            bboxes: vec![BoundingBox {
+                category_id: category.id,
+                bbox: vec![100.0, 50.0, 200.0, 150.0], // [x, y, width, height]
+                area: Some(30000.0),
+                iscrowd: Some(false),
+            }],
             metadata: Some(serde_json::json!({"confidence": 0.95})),
         };
 
@@ -834,10 +890,11 @@ mod tests {
         assert_eq!(resp.status(), 201);
 
         let body: serde_json::Value = test::read_body_json(resp).await;
-        assert_eq!(body["annotation"]["category_name"], "person");
-        assert_eq!(body["annotation"]["bbox"], serde_json::json!([100.0, 50.0, 200.0, 150.0]));
-        assert_eq!(body["annotation"]["area"], 30000.0);
-        assert_eq!(body["annotation"]["iscrowd"], false);
+        assert_eq!(body["annotations"].as_array().unwrap().len(), 1);
+        assert_eq!(body["annotations"][0]["category_name"], "person");
+        assert_eq!(body["annotations"][0]["bbox"], serde_json::json!([100.0, 50.0, 200.0, 150.0]));
+        assert_eq!(body["annotations"][0]["area"], 30000.0);
+        assert_eq!(body["annotations"][0]["iscrowd"], false);
     }
 
     #[actix_web::test]
@@ -862,10 +919,12 @@ mod tests {
         ).await;
 
         let create_request = CreateAnnotationRequest {
-            category_id: category.id,
-            bbox: vec![100.0, 50.0, 200.0], // Invalid: only 3 values
-            area: None,
-            iscrowd: None,
+            bboxes: vec![BoundingBox {
+                category_id: category.id,
+                bbox: vec![100.0, 50.0, 200.0], // Invalid: only 3 values
+                area: None,
+                iscrowd: None,
+            }],
             metadata: None,
         };
 
@@ -901,10 +960,12 @@ mod tests {
         ).await;
 
         let create_request = CreateAnnotationRequest {
-            category_id: category.id,
-            bbox: vec![-10.0, 50.0, 200.0, 150.0], // Invalid: negative value
-            area: None,
-            iscrowd: None,
+            bboxes: vec![BoundingBox {
+                category_id: category.id,
+                bbox: vec![-10.0, 50.0, 200.0, 150.0], // Invalid: negative value
+                area: None,
+                iscrowd: None,
+            }],
             metadata: None,
         };
 
@@ -932,8 +993,10 @@ mod tests {
         let task = crate::tasks::create_task_in_db(&pool, project.id, "Test Task", Some("test.jpg")).await.unwrap();
 
         // Create test annotations
-        create_annotation_in_db(&pool, task.id, category.id, &[100.0, 50.0, 200.0, 150.0], Some(30000.0), false, &serde_json::json!({}), user.id).await.unwrap();
-        create_annotation_in_db(&pool, task.id, category.id, &[300.0, 100.0, 150.0, 100.0], Some(15000.0), false, &serde_json::json!({}), user.id).await.unwrap();
+        let bbox1 = BoundingBox { category_id: category.id, bbox: vec![100.0, 50.0, 200.0, 150.0], area: Some(30000.0), iscrowd: Some(false) };
+        let bbox2 = BoundingBox { category_id: category.id, bbox: vec![300.0, 100.0, 150.0, 100.0], area: Some(15000.0), iscrowd: Some(false) };
+        create_annotation_in_db(&pool, task.id, &[bbox1], &serde_json::json!({}), user.id).await.unwrap();
+        create_annotation_in_db(&pool, task.id, &[bbox2], &serde_json::json!({}), user.id).await.unwrap();
 
         let app = test::init_service(
             App::new()
@@ -968,7 +1031,9 @@ mod tests {
         let category = crate::image_annotation_categories::create_image_annotation_category_in_db(&pool, project.id, "person", None, Some("human"), Some("#FF0000"), Some(1)).await.unwrap();
         let task = crate::tasks::create_task_in_db(&pool, project.id, "Test Task", Some("test.jpg")).await.unwrap();
 
-        let annotation = create_annotation_in_db(&pool, task.id, category.id, &[100.0, 50.0, 200.0, 150.0], Some(30000.0), false, &serde_json::json!({}), user.id).await.unwrap();
+        let bbox = BoundingBox { category_id: category.id, bbox: vec![100.0, 50.0, 200.0, 150.0], area: Some(30000.0), iscrowd: Some(false) };
+        let annotations = create_annotation_in_db(&pool, task.id, &[bbox], &serde_json::json!({}), user.id).await.unwrap();
+        let annotation = &annotations[0];
 
         let app = test::init_service(
             App::new()
@@ -987,8 +1052,8 @@ mod tests {
         assert!(resp.status().is_success());
 
         let body: serde_json::Value = test::read_body_json(resp).await;
-        assert_eq!(body["annotation"]["category_name"], "person");
-        assert_eq!(body["annotation"]["bbox"], serde_json::json!([100.0, 50.0, 200.0, 150.0]));
+        assert_eq!(body["annotations"][0]["category_name"], "person");
+        assert_eq!(body["annotations"][0]["bbox"], serde_json::json!([100.0, 50.0, 200.0, 150.0]));
     }
 
     #[actix_web::test]
@@ -1004,7 +1069,9 @@ mod tests {
         let category = crate::image_annotation_categories::create_image_annotation_category_in_db(&pool, project.id, "person", None, Some("human"), Some("#FF0000"), Some(1)).await.unwrap();
         let task = crate::tasks::create_task_in_db(&pool, project.id, "Test Task", Some("test.jpg")).await.unwrap();
 
-        let annotation = create_annotation_in_db(&pool, task.id, category.id, &[100.0, 50.0, 200.0, 150.0], Some(30000.0), false, &serde_json::json!({}), user.id).await.unwrap();
+        let bbox = BoundingBox { category_id: category.id, bbox: vec![100.0, 50.0, 200.0, 150.0], area: Some(30000.0), iscrowd: Some(false) };
+        let annotations = create_annotation_in_db(&pool, task.id, &[bbox], &serde_json::json!({}), user.id).await.unwrap();
+        let annotation = &annotations[0];
 
         let app = test::init_service(
             App::new()
@@ -1015,10 +1082,12 @@ mod tests {
         ).await;
 
         let update_request = UpdateAnnotationRequest {
-            category_id: category.id,
-            bbox: vec![120.0, 60.0, 180.0, 140.0], // Updated bbox
-            area: Some(25200.0),
-            iscrowd: Some(true),
+            bboxes: vec![BoundingBox {
+                category_id: category.id,
+                bbox: vec![120.0, 60.0, 180.0, 140.0], // Updated bbox
+                area: Some(25200.0),
+                iscrowd: Some(true),
+            }],
             metadata: Some(serde_json::json!({"confidence": 0.85, "updated": true})),
         };
 
@@ -1032,9 +1101,9 @@ mod tests {
         assert!(resp.status().is_success());
 
         let body: serde_json::Value = test::read_body_json(resp).await;
-        assert_eq!(body["annotation"]["bbox"], serde_json::json!([120.0, 60.0, 180.0, 140.0]));
-        assert_eq!(body["annotation"]["area"], 25200.0);
-        assert_eq!(body["annotation"]["iscrowd"], true);
+        assert_eq!(body["annotations"][0]["bbox"], serde_json::json!([120.0, 60.0, 180.0, 140.0]));
+        assert_eq!(body["annotations"][0]["area"], 25200.0);
+        assert_eq!(body["annotations"][0]["iscrowd"], true);
     }
 
     #[actix_web::test]
@@ -1050,7 +1119,9 @@ mod tests {
         let category = crate::image_annotation_categories::create_image_annotation_category_in_db(&pool, project.id, "person", None, Some("human"), Some("#FF0000"), Some(1)).await.unwrap();
         let task = crate::tasks::create_task_in_db(&pool, project.id, "Test Task", Some("test.jpg")).await.unwrap();
 
-        let annotation = create_annotation_in_db(&pool, task.id, category.id, &[100.0, 50.0, 200.0, 150.0], Some(30000.0), false, &serde_json::json!({}), user.id).await.unwrap();
+        let bbox = BoundingBox { category_id: category.id, bbox: vec![100.0, 50.0, 200.0, 150.0], area: Some(30000.0), iscrowd: Some(false) };
+        let annotations = create_annotation_in_db(&pool, task.id, &[bbox], &serde_json::json!({}), user.id).await.unwrap();
+        let annotation = &annotations[0];
 
         let app = test::init_service(
             App::new()
@@ -1093,10 +1164,12 @@ mod tests {
         ).await;
 
         let create_request = CreateAnnotationRequest {
-            category_id: category2.id, // Category from different project
-            bbox: vec![100.0, 50.0, 200.0, 150.0],
-            area: None,
-            iscrowd: None,
+            bboxes: vec![BoundingBox {
+                category_id: category2.id, // Category from different project
+                bbox: vec![100.0, 50.0, 200.0, 150.0],
+                area: None,
+                iscrowd: None,
+            }],
             metadata: None,
         };
 
@@ -1131,10 +1204,12 @@ mod tests {
         ).await;
 
         let create_request = CreateAnnotationRequest {
-            category_id: category.id,
-            bbox: vec![100.0, 50.0, 200.0, 150.0],
-            area: None,
-            iscrowd: None,
+            bboxes: vec![BoundingBox {
+                category_id: category.id,
+                bbox: vec![100.0, 50.0, 200.0, 150.0],
+                area: None,
+                iscrowd: None,
+            }],
             metadata: None,
         };
 

@@ -48,10 +48,10 @@ mod unit_tests {
 
     #[test]
     fn test_extract_task_name_from_file() {
-        assert_eq!(extract_task_name_from_file("image.jpg"), "image");
-        assert_eq!(extract_task_name_from_file("path/to/image.png"), "image");
-        assert_eq!(extract_task_name_from_file("/absolute/path/image.gif"), "image");
-        assert_eq!(extract_task_name_from_file("file.with.dots.jpg"), "file.with.dots");
+        assert_eq!(extract_task_name_from_file("image.jpg"), "image.jpg");
+        assert_eq!(extract_task_name_from_file("path/to/image.png"), "image.png");
+        assert_eq!(extract_task_name_from_file("/absolute/path/image.gif"), "image.gif");
+        assert_eq!(extract_task_name_from_file("file.with.dots.jpg"), "file.with.dots.jpg");
         assert_eq!(extract_task_name_from_file("no_extension"), "no_extension");
         assert_eq!(extract_task_name_from_file(""), "");
         assert_eq!(extract_task_name_from_file("/path/to/.hidden"), ".hidden");
@@ -555,8 +555,8 @@ async fn create_task_for_file(
 
 fn extract_task_name_from_file(file_key: &str) -> String {
     std::path::Path::new(file_key)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
+        .file_name()
+        .and_then(|name| name.to_str())
         .unwrap_or(file_key)
         .to_string()
 }
