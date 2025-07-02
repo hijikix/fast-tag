@@ -6,6 +6,14 @@ use crate::pages::detail::{
     AnnotationState, AnnotationCategory, annotation_client, BoundingBox,
 };
 use crate::auth::{AuthState, UserState, ProjectsState};
+use uuid;
+
+#[derive(Resource)]
+pub struct NextTaskMarker {
+    pub url: String,
+    pub task_id: Option<uuid::Uuid>,
+    pub project_id: uuid::Uuid,
+}
 
 pub fn render_rectangle_list(
     ui: &mut egui::Ui,
@@ -238,6 +246,8 @@ pub fn render_annotation_controls(
     _user_state: &UserState,
     _projects_state: &ProjectsState,
     image_dimensions: Vec2,
+    commands: Option<&mut Commands>,
+    next_state: Option<&mut NextState<crate::app::state::AppState>>,
 ) {
     ui.group(|ui| {
         ui.vertical_centered(|ui| {
@@ -338,6 +348,72 @@ pub fn render_annotation_controls(
                 }
             }
             
+            if ui.button("💾️ Save & Next Task").clicked() {
+                if let Some(token) = &auth_state.jwt {
+                    if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
+                        annotation_state.is_saving = true;
+                        let bounding_boxes = convert_rectangles_to_annotations(rectangles, &annotation_state.categories, image_dimensions);
+                        match annotation_client::save_annotations(project_id, task_id, bounding_boxes, token.clone()) {
+                            Ok(saved_annotations) => {
+                                info!("Annotations saved successfully: {} annotations", saved_annotations.len());
+                                
+                                // Try to get next unannotated task
+                                annotation_state.is_loading_next_task = true;
+                                let tasks_api = crate::api::tasks::TasksApi::new();
+                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                match rt.block_on(tasks_api.get_next_random_unannotated_task(token, &project_id.to_string())) {
+                                    Ok(Some(next_task)) => {
+                                        info!("Found next task: {}", next_task.task.name);
+                                        
+                                        // Update Parameters resource and trigger page reload
+                                        if let (Some(commands), Some(next_state)) = (commands, next_state) {
+                                            info!("Commands and next_state are available");
+                                            if let Some(url) = next_task.resolved_resource_url {
+                                                info!("Setting up next task with URL: {}", url);
+                                                let task_id = uuid::Uuid::parse_str(&next_task.task.id).ok();
+                                                commands.insert_resource(crate::pages::detail::Parameters {
+                                                    url: url.clone(),
+                                                    task_id,
+                                                    project_id: Some(project_id),
+                                                });
+                                                info!("Setting next task marker for reload");
+                                                // Set a marker to reload on next frame
+                                                annotation_state.is_loading_next_task = false;
+                                                annotation_state.current_task_id = task_id;
+                                                annotation_state.current_project_id = Some(project_id);
+                                                annotation_state.current_task_name = Some(next_task.task.name.clone());
+                                                annotation_state.image_url = Some(url.clone());
+                                                
+                                                // Use a temporary transition to force reload
+                                                commands.insert_resource(NextTaskMarker { url, task_id, project_id });
+                                                
+                                                info!("Marked for next task reload");
+                                            } else {
+                                                info!("Next task has no resolved_resource_url");
+                                            }
+                                        } else {
+                                            info!("Commands or next_state not available");
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        info!("No more unannotated tasks available");
+                                    }
+                                    Err(error) => {
+                                        error!("Failed to get next task: {}", error);
+                                    }
+                                }
+                                annotation_state.is_loading_next_task = false;
+                                annotation_state.is_saving = false;
+                            }
+                            Err(error) => {
+                                annotation_state.is_saving = false;
+                                error!("Failed to save annotations: {}", error);
+                            }
+                        }
+                    }
+                }
+            }
+            
             if ui.button("🔄 Reload Annotations").clicked() {
                 if let Some(token) = &auth_state.jwt {
                     if let (Some(project_id), Some(task_id)) = (annotation_state.current_project_id, annotation_state.current_task_id) {
@@ -410,6 +486,10 @@ pub fn render_annotation_controls(
         
         if annotation_state.is_saving {
             ui.label("⏳ Saving annotations...");
+        }
+        
+        if annotation_state.is_loading_next_task {
+            ui.label("🔍 Loading next task...");
         }
     });
 }
@@ -487,6 +567,8 @@ pub fn render_side_panels_with_annotations(
     user_state: &UserState,
     projects_state: &ProjectsState,
     image_dimensions: Vec2,
+    commands: Option<&mut Commands>,
+    next_state: Option<&mut NextState<crate::app::state::AppState>>,
 ) {
     egui::SidePanel::left("left_panel")
         .resizable(true)
@@ -501,6 +583,8 @@ pub fn render_side_panels_with_annotations(
                 user_state,
                 projects_state,
                 image_dimensions,
+                commands,
+                next_state,
             )
         });
 
