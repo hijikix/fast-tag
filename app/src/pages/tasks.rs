@@ -129,10 +129,58 @@ pub fn ui_system(
             ui.add_space(10.0);
         });
 
-        // Create new task button and refresh
+        // Create new task button, start annotation button, and refresh
         ui.horizontal(|ui| {
             if ui.button("➕ New Task").clicked() {
                 page_data.show_create_dialog = true;
+            }
+
+            if ui.button("🎯 Start Annotation").clicked() && !tasks_state.is_fetching {
+                if let (Some(jwt), Some(params)) = (auth_state.get_jwt(), &parameters) {
+                    let jwt = jwt.clone();
+                    let project_id = params.project_id.clone();
+                    
+                    let tasks_api = TasksApi::new();
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    match rt.block_on(tasks_api.get_next_random_unannotated_task(&jwt, &project_id)) {
+                        Ok(Some(task_with_url)) => {
+                            println!("Found random unannotated task: {}", task_with_url.task.name);
+                            
+                            // Use resolved_resource_url if available, fallback to original resource_url
+                            let url_to_use = task_with_url.resolved_resource_url.as_ref()
+                                .or(task_with_url.task.resource_url.as_ref());
+                            
+                            if let Some(url) = url_to_use {
+                                let url = url.clone();
+                                
+                                // Validate URL
+                                if !url.is_empty() {
+                                    // Parse project_id and task_id
+                                    let project_id = uuid::Uuid::parse_str(&params.project_id).ok();
+                                    let task_id = uuid::Uuid::parse_str(&task_with_url.task.id).ok();
+                                    
+                                    // Set parameters for Detail page and navigate
+                                    commands.insert_resource(detail::Parameters {
+                                        url,
+                                        task_id,
+                                        project_id,
+                                    });
+                                    next_state.set(AppState::Detail);
+                                } else {
+                                    tasks_state.set_error("Task has no valid resource URL".to_string());
+                                }
+                            } else {
+                                tasks_state.set_error("Task has no resource URL".to_string());
+                            }
+                        }
+                        Ok(None) => {
+                            tasks_state.set_error("No unannotated tasks available".to_string());
+                        }
+                        Err(error) => {
+                            tasks_state.set_error(format!("Failed to fetch next task: {}", error));
+                        }
+                    }
+                }
             }
             
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -63,6 +63,12 @@ impl TasksApi {
         Ok(response.tasks)
     }
 
+    pub async fn get_next_random_unannotated_task(&self, jwt: &str, project_id: &str) -> ApiResult<Option<TaskWithResolvedUrl>> {
+        let endpoint = format!("/projects/{}/tasks?next_unannotated=true&random=true", project_id);
+        let response: TasksListResponse = self.client.get(&endpoint, Some(jwt)).await?;
+        Ok(response.tasks.into_iter().next())
+    }
+
     pub async fn create_task(
         &self,
         jwt: &str,
