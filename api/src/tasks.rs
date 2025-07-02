@@ -137,10 +137,16 @@ pub async fn list_tasks(
 
     // Check if next_unannotated flag is set
     let next_unannotated = query.get("next_unannotated").map(|v| v == "true").unwrap_or(false);
+    // Check if random flag is set (only used with next_unannotated)
+    let random = query.get("random").map(|v| v == "true").unwrap_or(false);
 
     // Get project tasks
     let tasks_result = if next_unannotated {
-        get_next_unannotated_task(&pool, project_id).await
+        if random {
+            get_random_unannotated_task(&pool, project_id).await
+        } else {
+            get_next_unannotated_task(&pool, project_id).await
+        }
     } else {
         get_project_tasks(&pool, project_id).await
     };
@@ -369,6 +375,25 @@ async fn get_next_unannotated_task(pool: &Pool<Postgres>, project_id: Uuid) -> R
             SELECT 1 FROM annotations a WHERE a.task_id = t.id
         )
         ORDER BY t.created_at ASC
+        LIMIT 1
+        "#
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+}
+
+async fn get_random_unannotated_task(pool: &Pool<Postgres>, project_id: Uuid) -> Result<Vec<Task>, sqlx::Error> {
+    sqlx::query_as::<_, Task>(
+        r#"
+        SELECT t.id, t.project_id, t.name, t.resource_url, t.status, t.created_at, t.updated_at, t.completed_at 
+        FROM tasks t
+        WHERE t.project_id = $1 
+        AND t.status != 'completed'
+        AND NOT EXISTS (
+            SELECT 1 FROM annotations a WHERE a.task_id = t.id
+        )
+        ORDER BY RANDOM()
         LIMIT 1
         "#
     )
