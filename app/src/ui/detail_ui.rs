@@ -366,7 +366,7 @@ pub fn render_annotation_controls(
                                         info!("Found next task: {}", next_task.task.name);
                                         
                                         // Update Parameters resource and trigger page reload
-                                        if let (Some(commands), Some(next_state)) = (commands, next_state) {
+                                        if let (Some(commands), Some(_next_state)) = (commands, next_state) {
                                             info!("Commands and next_state are available");
                                             if let Some(url) = next_task.resolved_resource_url {
                                                 info!("Setting up next task with URL: {}", url);
