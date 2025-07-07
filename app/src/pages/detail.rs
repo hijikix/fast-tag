@@ -57,6 +57,7 @@ pub struct InteractionHandlers {
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub struct SelectedRect;
 
+#[allow(clippy::too_many_arguments)]
 pub fn setup(
     mut commands: Commands,
     params: Res<Parameters>,
@@ -64,6 +65,8 @@ pub fn setup(
     mut config_store: ResMut<GizmoConfigStore>,
     mut annotation_state: ResMut<AnnotationState>,
     auth_state: Res<crate::auth::AuthState>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    mut camera_transforms: Query<&mut Transform, With<Camera>>,
 ) {
     println!("detail setup");
 
@@ -94,13 +97,34 @@ pub fn setup(
         line_scale: 3.0,
     };
 
+    // Calculate initial zoom to fit image in window
+    let mut camera_controller = CameraController::default();
+    
+    if let Ok(window) = q_window.single() {
+        let window_size = Vec2::new(window.width(), window.height());
+        
+        // Calculate zoom level to fit image with 30% padding on each side
+        let padding_factor = 0.4; // 40% of window size (30% padding on each side)
+        let zoom_x = (window_size.x * padding_factor) / image_dimensions.x;
+        let zoom_y = (window_size.y * padding_factor) / image_dimensions.y;
+        let initial_zoom = zoom_x.min(zoom_y).clamp(0.1, 10.0);
+        
+        // Set initial zoom level
+        camera_controller.zoom_level = initial_zoom;
+        
+        // Apply initial zoom to camera
+        if let Ok(mut camera_transform) = camera_transforms.single_mut() {
+            camera_transform.scale = Vec3::splat(1.0 / initial_zoom);
+        }
+    }
+    
     // add resource - always create this even if image loading failed
     commands.insert_resource(DetailData {
         image_entity,
         image_dimensions,
         selected_class: 1,
         cursor_position: None,
-        camera_controller: CameraController::default(),
+        camera_controller,
         text_entities: Vec::new(),
     });
 
@@ -121,7 +145,7 @@ pub fn setup(
         if let Some(token) = auth_state.get_jwt() {
             let categories_api = CategoriesApi::new();
             let rt = tokio::runtime::Runtime::new().unwrap();
-            match rt.block_on(categories_api.list_categories(&token, project_id)) {
+            match rt.block_on(categories_api.list_categories(token, project_id)) {
                 Ok(categories) => {
                     annotation_state.categories = categories.clone();
                     info!("Loaded categories for project: {}", project_id);
@@ -443,6 +467,7 @@ pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
     commands.remove_resource::<CommandHistory>();
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn check_next_task_system(
     mut commands: Commands,
     next_task_marker: Option<Res<crate::ui::detail_ui::NextTaskMarker>>,
@@ -450,6 +475,8 @@ pub fn check_next_task_system(
     mut annotation_state: ResMut<AnnotationState>,
     mut detail_data: ResMut<DetailData>,
     mut images: ResMut<Assets<Image>>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    mut camera_transforms: Query<&mut Transform, With<Camera>>,
 ) {
     if let Some(marker) = next_task_marker {
         info!("Processing next task marker");
@@ -465,6 +492,25 @@ pub fn check_next_task_system(
                 // Update detail data
                 detail_data.image_entity = new_image_entity;
                 detail_data.image_dimensions = new_image_dimensions;
+                
+                // Calculate and apply zoom for new image
+                if let Ok(window) = q_window.single() {
+                    let window_size = Vec2::new(window.width(), window.height());
+                    
+                    // Calculate zoom level to fit image with 30% padding on each side
+                    let padding_factor = 0.4; // 40% of window size (30% padding on each side)
+                    let zoom_x = (window_size.x * padding_factor) / new_image_dimensions.x;
+                    let zoom_y = (window_size.y * padding_factor) / new_image_dimensions.y;
+                    let initial_zoom = zoom_x.min(zoom_y).clamp(0.1, 10.0);
+                    
+                    // Update camera controller zoom level
+                    detail_data.camera_controller.zoom_level = initial_zoom;
+                    
+                    // Apply zoom to camera
+                    if let Ok(mut camera_transform) = camera_transforms.single_mut() {
+                        camera_transform.scale = Vec3::splat(1.0 / initial_zoom);
+                    }
+                }
                 
                 // Update annotation state
                 annotation_state.current_task_id = marker.task_id;

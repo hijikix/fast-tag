@@ -337,7 +337,7 @@ pub async fn create_image_annotation_category_in_db(
     .bind(supercategory)
     .bind(color)
     .bind(coco_id)
-    .bind(&serde_json::json!({}))
+    .bind(serde_json::json!({}))
     .bind(now)
     .bind(now)
     .fetch_one(pool)
@@ -381,6 +381,7 @@ async fn get_image_annotation_category_by_id(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn update_image_annotation_category_in_db(
     pool: &Pool<Postgres>,
     category_id: Uuid,

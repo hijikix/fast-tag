@@ -222,7 +222,7 @@ async fn get_project_annotations_for_export(
         // Extract filename from resource_url or use task name
         let file_name = task.resource_url
             .as_ref()
-            .and_then(|url| url.split('/').last())
+            .and_then(|url| url.split('/').next_back())
             .unwrap_or(&task.name)
             .to_string();
 
@@ -253,7 +253,7 @@ async fn get_project_annotations_for_export(
             };
 
             // Convert bbox to Vec<f64>
-            let bbox_vec: Vec<f64> = row.bbox.into_iter().map(|v| v as f64).collect();
+            let bbox_vec: Vec<f64> = row.bbox.into_iter().collect();
             
             // Calculate area if not provided
             let area = row.area.unwrap_or_else(|| {

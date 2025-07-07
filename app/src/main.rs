@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 
 mod api;
 mod app;
@@ -34,7 +35,7 @@ fn main() {
         .init_resource::<AuthState>()
         .init_resource::<UserState>()
         .init_resource::<ProjectsState>()
-        .add_systems(Startup, (setup, setup_fonts))
+        .add_systems(Startup, (setup, setup_fonts, maximize_window))
         .add_plugins(sync::SyncPlugin)
         .add_plugins(LoginPlugin)
         .add_plugins(TasksPlugin)
@@ -69,4 +70,10 @@ fn setup_fonts(mut contexts: EguiContexts) {
         .push("noto_sans_jp".to_owned());
 
     contexts.ctx_mut().set_fonts(fonts);
+}
+
+fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>) {
+    for mut window in windows.iter_mut() {
+        window.set_maximized(true);
+    }
 }

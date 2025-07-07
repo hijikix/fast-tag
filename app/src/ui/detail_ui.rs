@@ -238,6 +238,7 @@ pub fn render_rectangle_editor(
 }
 
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_annotation_controls(
     ui: &mut egui::Ui,
     rectangles: &mut Vec<Rectangle>,
@@ -293,7 +294,7 @@ pub fn render_annotation_controls(
                 ui.label("Rectangle classes will map to categories as follows:");
                 for class in 1..=9 {
                     if !annotation_state.categories.is_empty() {
-                        let category_index = ((class - 1) % annotation_state.categories.len()) as usize;
+                        let category_index = (class - 1) % annotation_state.categories.len();
                         let category = &annotation_state.categories[category_index];
                         
                         ui.horizontal(|ui| {
@@ -506,7 +507,7 @@ fn convert_rectangles_to_annotations(rectangles: &[Rectangle], categories: &[Ann
         // For now, use modulo to cycle through available categories
         // Or map class 1 -> category 0, class 2 -> category 1, etc.
         let category_id = if !categories.is_empty() {
-            let category_index = ((rect.class - 1) % categories.len()) as usize;
+            let category_index = (rect.class - 1) % categories.len();
             categories[category_index].id
         } else {
             // If no categories exist, we need to skip this annotation
@@ -558,6 +559,7 @@ fn convert_rectangles_to_annotations(rectangles: &[Rectangle], categories: &[Ann
     annotations
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_side_panels_with_annotations(
     contexts: &mut EguiContexts,
     rectangles: &mut Vec<Rectangle>,
