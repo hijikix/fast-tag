@@ -28,8 +28,8 @@ pub struct Parameters {
 
 #[derive(Resource)]
 pub struct DetailData {
-    image_entity: Entity,
-    image_dimensions: Vec2,
+    pub image_entity: Entity,
+    pub image_dimensions: Vec2,
     cursor_position: Option<Vec2>,
     selected_class: usize,
     camera_controller: CameraController,
@@ -417,6 +417,8 @@ pub fn ui_system(
         &user_state,
         &projects_state,
         detail_data.image_dimensions,
+        Some(&mut commands),
+        Some(&mut next_state),
     );
     
     // Check if rectangles were sorted (order might have changed)
@@ -441,13 +443,60 @@ pub fn cleanup(mut commands: Commands, detail_data: Res<DetailData>) {
     commands.remove_resource::<CommandHistory>();
 }
 
+pub fn check_next_task_system(
+    mut commands: Commands,
+    next_task_marker: Option<Res<crate::ui::detail_ui::NextTaskMarker>>,
+    mut rectangles: ResMut<Rectangles>,
+    mut annotation_state: ResMut<AnnotationState>,
+    mut detail_data: ResMut<DetailData>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if let Some(marker) = next_task_marker {
+        info!("Processing next task marker");
+        
+        // Load new image
+        match crate::io::image_loader::spawn_image_sprite(&mut commands, &mut images, &marker.url) {
+            Ok((new_image_entity, new_image_dimensions)) => {
+                info!("New image loaded with dimensions: {:?}", new_image_dimensions);
+                
+                // Despawn old image
+                commands.entity(detail_data.image_entity).despawn();
+                
+                // Update detail data
+                detail_data.image_entity = new_image_entity;
+                detail_data.image_dimensions = new_image_dimensions;
+                
+                // Update annotation state
+                annotation_state.current_task_id = marker.task_id;
+                annotation_state.current_project_id = Some(marker.project_id);
+                annotation_state.is_loading_next_task = false;
+                
+                // Clear rectangles for new task
+                rectangles.0.clear();
+                
+                info!("Successfully switched to next task");
+            }
+            Err(e) => {
+                error!("Failed to load new image: {}", e);
+                annotation_state.is_loading_next_task = false;
+            }
+        }
+        
+        // Remove the marker
+        commands.remove_resource::<crate::ui::detail_ui::NextTaskMarker>();
+    }
+}
+
 // Annotation types and structures
 #[derive(Resource, Default)]
 pub struct AnnotationState {
     pub is_saving: bool,
+    pub is_loading_next_task: bool,
     pub categories: Vec<AnnotationCategory>,
     pub current_task_id: Option<Uuid>,
     pub current_project_id: Option<Uuid>,
+    pub current_task_name: Option<String>,
+    pub image_url: Option<String>,
 }
 
 // API types are now re-exported at the top of the file
@@ -504,7 +553,7 @@ impl Plugin for DetailPlugin {
            .init_resource::<InteractionHandlers>()
            .init_resource::<AnnotationState>()
            .add_systems(OnEnter(AppState::Detail), setup)
-           .add_systems(Update, update.run_if(in_state(AppState::Detail)))
+           .add_systems(Update, (update, check_next_task_system).run_if(in_state(AppState::Detail)))
            .add_systems(
                EguiContextPass,
                ui_system.run_if(in_state(AppState::Detail)),
