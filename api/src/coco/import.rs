@@ -181,7 +181,7 @@ async fn import_coco_data(
             category_mapping.get(&coco_annotation.category_id),
             image_mapping.get(&coco_annotation.image_id),
         ) {
-            task_annotations.entry(task_id).or_insert_with(Vec::new).push((coco_annotation, category_id));
+            task_annotations.entry(task_id).or_default().push((coco_annotation, category_id));
         } else {
             stats.errors.push(format!("Annotation {} references invalid category or image", coco_annotation.id));
         }

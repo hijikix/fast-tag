@@ -527,10 +527,7 @@ async fn resolve_storage_url(
     };
     
     // Generate presigned URL with 1 hour expiry
-    match storage_provider.get_presigned_url(key, 3600).await {
-        Ok(url) => Some(url),
-        Err(_) => None,
-    }
+    storage_provider.get_presigned_url(key, 3600).await.ok()
 }
 
 async fn get_project_by_id(
